@@ -271,13 +271,25 @@ func quantize(f, fullScale, posLimit, negLimit float64) int64 {
 		// NaN, which compares false against both limits above, so it lands
 		// here. Testing it last keeps it off the common path.
 		return 0
+	case v > -0.5 && v < 0.5:
+		// Everything inside half an LSB rounds to zero, and taking it here
+		// keeps it away from the addition below.
+		//
+		// That is not just a shortcut. Adding a half to a value smaller than
+		// a half carries it into the next binade, where the significand is
+		// one bit coarser, so the sum is NOT exact: the largest float64 below
+		// 0.5 plus 0.5 rounds to exactly 1.0, which would quantise to 1 where
+		// math.Round gives 0. Those two values, one per sign, are the only
+		// inputs where the arithmetic below would disagree with math.Round,
+		// and this arm removes them.
+		return 0
 	case v >= 0:
-		// Round half away from zero, which is what math.Round does. The clamp
-		// above bounds v well inside the 52-bit mantissa, so adding the signed
-		// half is exact and the conversion's truncation toward zero finishes
-		// the job. Doing it inline rather than calling math.Round matters:
-		// Round was 14 percent of the float conversion path, and its cost also
-		// pushed this function past the inlining budget.
+		// Round half away from zero, matching math.Round. Above half an LSB
+		// the addition cannot change binade, so it is exact and the
+		// conversion's truncation toward zero finishes the job. Doing this
+		// inline rather than calling math.Round matters: Round was 14 percent
+		// of the float conversion path, and its cost also pushed this
+		// function past the inlining budget.
 		return int64(v + 0.5)
 	default:
 		return int64(v - 0.5)
