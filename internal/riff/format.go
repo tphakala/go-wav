@@ -185,6 +185,22 @@ func validateDepth(format wav.SampleFormat, bits int) error {
 	}
 }
 
+// fmtPayloadLen is the fmt chunk payload size the format calls for.
+//
+// A non-PCM encoding must carry the cbSize field even when it has no extension
+// to describe, so float gets the 18-byte form at minimum; tools reject or warn
+// on a bare 16-byte fmt chunk for float.
+func fmtPayloadLen(f Format) int {
+	switch {
+	case needsExtensible(f):
+		return fmtSizeExtensible
+	case f.Format != wav.SampleFormatPCM:
+		return fmtSizeExtended
+	default:
+		return fmtSizePCM
+	}
+}
+
 // needsExtensible reports whether the format requires the extensible fmt form.
 // More than two channels or an integer depth above 16 bits both mandate it, and
 // a caller asking for a specific speaker layout needs somewhere to put it.
@@ -201,17 +217,7 @@ func needsExtensible(f Format) bool {
 // appendFmt appends a complete fmt chunk, choosing the 16-byte or 40-byte form.
 func appendFmt(dst []byte, f Format) ([]byte, error) {
 	extensible := needsExtensible(f)
-
-	// A non-PCM encoding must carry the cbSize field even when it has no
-	// extension to describe, so float gets the 18-byte form at minimum.
-	// Tools reject or warn on a bare 16-byte fmt chunk for float.
-	payload := fmtSizePCM
-	switch {
-	case extensible:
-		payload = fmtSizeExtensible
-	case f.Format != wav.SampleFormatPCM:
-		payload = fmtSizeExtended
-	}
+	payload := fmtPayloadLen(f)
 
 	bytesPerSample := int64((f.BitDepth + 7) / 8)
 	blockAlign := bytesPerSample * int64(f.Channels)

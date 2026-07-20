@@ -20,10 +20,27 @@ var (
 // error rather than a condition a caller branches on, so it is not exported.
 var errNilReader = errors.New("go-wav/pcm: nil reader")
 
-// readBufferSize is the buffered reader's window. It must exceed the largest
-// header the parser inspects, and Peek needs only four bytes, so any sensible
-// size works; this one just amortises syscalls.
-const readBufferSize = 64 << 10
+// readBufferSize is the buffered reader's window.
+//
+// It is sized for header parsing and nothing else. The only window-sensitive
+// operation there is the Peek(4) that resolves a missing pad byte; chunk
+// payloads are read into their own buffer, so a chunk larger than this window
+// parses fine. Audio never comes through it, because reading samples switches
+// to the wider streamBufferSize window below.
+//
+// Keeping it small is what makes opening a file just to read its Info cheap,
+// which is the shape of any tool that scans a directory of recordings.
+const readBufferSize = 512
+
+// streamBufferSize is the window used once a caller starts reading audio. It
+// is wide because a small one would be refilled once per caller read for any
+// caller reading in smaller blocks, multiplying the reads reaching the source.
+const streamBufferSize = 64 << 10
+
+// writeToBufferSize is the staging buffer WriteTo streams through. It is
+// independent of readBufferSize because here a larger block genuinely does
+// reduce the number of round trips.
+const writeToBufferSize = 64 << 10
 
 // config holds decoder options. It is unexported, which makes Option opaque to
 // callers, matching go-aac.
@@ -90,6 +107,13 @@ type Decoder struct {
 	// have when the data chunk length is unknown. It is -1 when the source
 	// cannot seek.
 	dataStart int64
+
+	// stream is a wider buffer layered over br, created on the first read of
+	// audio. Header parsing wants a small window because a Decoder opened only
+	// to read Info pays for it; streaming wants a wide one because a caller
+	// reading in small blocks would otherwise refill a small window constantly.
+	// Deferring it gives each case what it needs, and costs the probe nothing.
+	stream *bufio.Reader
 
 	// convert is non-zero when samples are converted on the way out.
 	convert int
@@ -166,8 +190,17 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		}
 	}
 
+	// The streaming window is carried across, like the other buffers. Dropping
+	// it would make every Reset reallocate 64 KiB, which is the opposite of
+	// what pooling a Decoder is for.
+	stream := d.stream
+	if stream != nil {
+		stream.Reset(br)
+	}
+
 	*d = Decoder{
 		br:        br,
+		stream:    stream,
 		src:       r,
 		cfg:       cfg,
 		hdr:       hdr,
@@ -224,6 +257,16 @@ func (d *Decoder) Read(p []byte) (int, error) {
 	return d.readConverted(p)
 }
 
+// audio returns the reader to take sample data from, widening the buffer the
+// first time it is asked. Layering over br rather than over the source keeps
+// whatever br still holds, so no bytes are stranded.
+func (d *Decoder) audio() *bufio.Reader {
+	if d.stream == nil {
+		d.stream = bufio.NewReaderSize(d.br, streamBufferSize)
+	}
+	return d.stream
+}
+
 // readRaw copies stored bytes straight through, bounded by the data chunk.
 func (d *Decoder) readRaw(p []byte) (int, error) {
 	if d.remaining == 0 {
@@ -232,7 +275,7 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 	if d.remaining > 0 && int64(len(p)) > d.remaining {
 		p = p[:d.remaining]
 	}
-	n, err := d.br.Read(p)
+	n, err := d.audio().Read(p)
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
@@ -294,7 +337,7 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	}
 	buf := d.srcBuf[:want]
 
-	n, err := io.ReadFull(d.br, buf)
+	n, err := io.ReadFull(d.audio(), buf)
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
@@ -328,7 +371,7 @@ func (d *Decoder) WriteTo(w io.Writer) (int64, error) {
 	if d.err != nil {
 		return 0, d.err
 	}
-	buf := make([]byte, readBufferSize)
+	buf := make([]byte, writeToBufferSize)
 	var total int64
 	for {
 		n, rerr := d.Read(buf)
@@ -380,6 +423,13 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		return 0, err
 	}
 	d.br.Reset(d.src)
+	// The streaming buffer holds bytes from before the seek, so it has to be
+	// emptied. Reset it onto br rather than dropping it: discarding would make
+	// every seek allocate a fresh 64 KiB window, and random access is exactly
+	// the workload that seeks repeatedly.
+	if d.stream != nil {
+		d.stream.Reset(d.br)
+	}
 	if d.hdr.DataSize >= 0 {
 		d.remaining = d.hdr.DataSize - offset
 	}

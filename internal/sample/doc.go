@@ -1,7 +1,11 @@
 // Package sample converts WAVE sample data between the encodings this library
-// supports. It is the single place where the on-disk representation of a sample
-// is written down: every other package asks this one rather than reimplementing
-// the rules.
+// supports. No other package writes down the on-disk representation of a
+// sample: they ask this one rather than reimplementing the rules.
+//
+// Within this package the rules are stated twice on purpose. The conversion
+// loops carry one statement, and the tests carry an independent reference
+// implementation, so a mistake in either shows up as a disagreement between
+// them instead of being confirmed by its own logic.
 //
 // # Encoding rules
 //
