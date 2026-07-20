@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -1322,6 +1323,222 @@ func TestFrameCountFallbacks(t *testing.T) {
 			t.Errorf("TotalFrames = %d, want 4321 from the ds64 sampleCount", h.Info.TotalFrames)
 		}
 	})
+
+	// The shape an interrupted RF64 writer leaves behind: ds64 present but
+	// neither of its sizes stamped, and a fact chunk holding the supersession
+	// sentinel it was given when the count outgrew 32 bits. Read as a number
+	// that sentinel claims 4294967295 frames, nearly 25 hours at 48 kHz, for a
+	// file that carried 400 bytes.
+	t.Run("fact_chunk_sentinel_does_not_become_a_frame_count", func(t *testing.T) {
+		b := cat(
+			fileHeader(idRF64, sentinel32, idWAVE),
+			chunk(idDS64, ds64Payload(999, 0, 0)),
+			chunk(idFmt, stdFmtPayload()),
+			chunk(idFact, le32(sentinel32)),
+			chunkLying(idData, sentinel32, make([]byte, 400)),
+		)
+		h, err := parseBytes(b)
+		if err != nil {
+			t.Fatalf("ParseHeader: %v", err)
+		}
+		if h.Info.TotalFrames != 0 {
+			t.Errorf("TotalFrames = %d, want 0: the fact chunk held the supersession sentinel, not a count",
+				h.Info.TotalFrames)
+		}
+	})
+
+	// A ds64 whose data size was never stamped but whose sample count was is
+	// the combination that reaches the fallback, so it is also the combination
+	// that reaches it carrying a count nothing has checked. TotalFrames is
+	// exported, and the obvious uses of it (sizing a buffer, converting to
+	// int64) overflow or panic on a value near the top of the range.
+	t.Run("absurd_ds64_sample_count_is_reported_as_unknown", func(t *testing.T) {
+		b := cat(
+			fileHeader(idRF64, sentinel32, idWAVE),
+			chunk(idDS64, ds64Payload(999, 0, math.MaxUint64)),
+			chunk(idFmt, stdFmtPayload()),
+			chunkLying(idData, sentinel32, make([]byte, 400)),
+		)
+		h, err := parseBytes(b)
+		if err != nil {
+			t.Fatalf("ParseHeader: %v", err)
+		}
+		if !h.DataSizeUnknown() {
+			t.Fatalf("DataSizeUnknown() = false, want true for a zero ds64 dataSize")
+		}
+		if h.Info.TotalFrames != 0 {
+			t.Errorf("TotalFrames = %d, want 0 (unknown) for a sample count no stream could hold",
+				h.Info.TotalFrames)
+		}
+	})
+}
+
+// TestResolveFramesBoundsDeclaredCounts pins the ceiling on the two fallbacks
+// directly, because the fact chunk carries a 32-bit count that no file can push
+// past the limit and that boundary is therefore unreachable through the parser.
+// The limit is the maxDataSize ceiling resolveDataSize applies to a measured
+// length, divided by the frame width: a declared count is credible only if the
+// audio it claims stays under the ceiling this reader will believe, which is a
+// policy of the reader and well below what RF64 itself can describe.
+func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
+	t.Parallel()
+	const blockAlign = 4
+	const limit = maxDataSize / blockAlign
+
+	tests := []struct {
+		name       string
+		dataSize   int64
+		blockAlign int64
+		ds64       ds64Info
+		haveDS64   bool
+		factFrames uint64
+		want       uint64
+	}{
+		{
+			// The measured length wins outright, so the ceiling never applies
+			// to it. Stating that needs a declared count present and absurd:
+			// with haveDS64 false there is nothing for the measured size to
+			// beat, and the case would pass even if the precedence were
+			// reversed.
+			name:       "measured data size beats a declared count and this rule does not apply",
+			dataSize:   400,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: math.MaxUint64},
+			haveDS64:   true,
+			want:       100,
+		},
+		{
+			name:       "sample count at the limit is kept",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: limit},
+			haveDS64:   true,
+			want:       limit,
+		},
+		{
+			name:       "sample count one past the limit is unknown",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: limit + 1},
+			haveDS64:   true,
+			want:       0,
+		},
+		{
+			name:       "all ones sample count is unknown",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: math.MaxUint64},
+			haveDS64:   true,
+			want:       0,
+		},
+		{
+			// ds64 wins over the fact chunk when both are present and usable.
+			// Without a row where the two disagree, inverting that precedence
+			// leaves the whole table green.
+			name:       "an accepted sample count beats the fact chunk",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: 4321},
+			haveDS64:   true,
+			factFrames: 1000,
+			want:       4321,
+		},
+		{
+			// A rejected ds64 count does not fall through. The fact chunk is
+			// the field ds64 supersedes, so it is the less trustworthy of the
+			// two and cannot stand in for the one just refused.
+			//
+			// The fact value here must not be the sentinel: that is refused on
+			// its own account below, which would leave this row green whether
+			// the fall-through existed or not.
+			name:       "a rejected sample count does not fall through to the fact chunk",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: limit + 1},
+			haveDS64:   true,
+			factFrames: 1000,
+			want:       0,
+		},
+		{
+			// 0xFFFFFFFF in the fact chunk is the superseded sentinel, the
+			// same value resolveDataSize already refuses to read as a length.
+			// It arrives whenever the real count outgrew 32 bits, so believing
+			// it reports 4294967295 frames for a file that said it did not
+			// know. Reached whenever ds64 stamped no sample count, which is
+			// the interrupted-writer case the ds64 fallback exists to serve.
+			name:       "the fact chunk sentinel is not a count",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: 0},
+			haveDS64:   true,
+			factFrames: uint64(sentinel32),
+			want:       0,
+		},
+		{
+			name:       "fact frames at the limit are kept",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			factFrames: limit,
+			want:       limit,
+		},
+		{
+			name:       "fact frames one past the limit are unknown",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			factFrames: limit + 1,
+			want:       0,
+		},
+		{
+			// With no frame width there is nothing to multiply by, so the
+			// count is bounded on its own. maxDataSize remains the ceiling,
+			// which is what keeps int64(TotalFrames) from going negative.
+			//
+			// Like the fact-chunk boundary above, this arm is unreachable
+			// through the parser: parseFmt always recomputes BlockAlign from
+			// the bit depth and channel count, both of which it has already
+			// rejected as zero, so a parsed header never carries a width of 0.
+			name:       "unknown block align still bounds the count",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: math.MaxUint64},
+			haveDS64:   true,
+			want:       0,
+		},
+		{
+			name:       "unknown block align keeps a credible count",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: 4321},
+			haveDS64:   true,
+			want:       4321,
+		},
+		{
+			name:       "unknown block align keeps a count at the bare ceiling",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: maxDataSize},
+			haveDS64:   true,
+			want:       maxDataSize,
+		},
+		{
+			name:       "unknown block align rejects one past the bare ceiling",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: maxDataSize + 1},
+			haveDS64:   true,
+			want:       0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := resolveFrames(tt.dataSize, tt.blockAlign, tt.ds64, tt.haveDS64, tt.factFrames)
+			if got != tt.want {
+				t.Errorf("resolveFrames(%d, %d, %+v, %v, %d) = %d, want %d",
+					tt.dataSize, tt.blockAlign, tt.ds64, tt.haveDS64, tt.factFrames, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestToleranceDeclaredSizeBeyondEOF(t *testing.T) {

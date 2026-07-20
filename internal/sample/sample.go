@@ -51,13 +51,69 @@ func Validate(format wav.SampleFormat, bitDepth int) error {
 // sample in the source contributes nothing, because Convert ignores it. The
 // result is 0 for a negative length or for a bit depth that is not a whole
 // number of bytes wide, which are exactly the cases Convert rejects.
+//
+// The result is also 0 when it would not fit in an int, which a widening
+// conversion of a large enough source reaches on a 32-bit target. Callers
+// sizing a buffer from this cannot tell that 0 apart from the one a source too
+// short to hold a sample produces, so they should hand the buffer to Convert
+// and let it report the difference rather than treating 0 as nothing to do.
 func ConvertedLen(srcLen, srcBits, dstBits int) int {
+	n, _ := convertedLen(srcLen, srcBits, dstBits)
+	return n
+}
+
+// convertedLen is [ConvertedLen] with the overflow case distinguishable. The
+// bool is false only when the destination size is unrepresentable, which is a
+// refusal; a true with a 0 length is the ordinary "nothing to convert".
+//
+// The check divides before multiplying, so it never performs the multiplication
+// it is guarding against. Doing it here rather than at each call site is what
+// keeps a future caller from reintroducing the wrap: the streaming decoder is
+// safe only because it batches, and a one-shot path that hands over a whole
+// file is one line away from asking for a product that does not fit.
+func convertedLen(srcLen, srcBits, dstBits int) (int, bool) {
 	srcWidth := bytesPerSample(srcBits)
 	dstWidth := bytesPerSample(dstBits)
 	if srcLen <= 0 || srcWidth <= 0 || dstWidth <= 0 {
-		return 0
+		return 0, true
 	}
-	return (srcLen / srcWidth) * dstWidth
+	samples := srcLen / srcWidth
+	if samples > math.MaxInt/dstWidth {
+		return 0, false
+	}
+	return samples * dstWidth, true
+}
+
+// convertPlan checks everything [Convert] needs to be true before it touches a
+// byte, and returns the number of destination bytes it will write. It takes
+// lengths rather than slices so that the size limit it enforces can be tested
+// at a boundary no allocation on this machine could reach.
+func convertPlan(srcLen, dstLen int, srcFormat wav.SampleFormat, srcBits, dstBits int) (int, error) {
+	if err := Validate(srcFormat, srcBits); err != nil {
+		return 0, err
+	}
+	// The destination is always integer PCM, so it is validated against that
+	// format rather than against srcFormat.
+	if err := Validate(wav.SampleFormatPCM, dstBits); err != nil {
+		return 0, err
+	}
+
+	need, ok := convertedLen(srcLen, srcBits, dstBits)
+	if !ok {
+		// Refused here rather than left to the length check below, because the
+		// 0 an unrepresentable size produces would otherwise pass a check no
+		// destination can fail and then be read as an empty conversion. No
+		// destination could ever be long enough anyway: a slice that long does
+		// not exist on this platform, which is the limiting case of a short
+		// buffer rather than a different kind of failure.
+		return 0, fmt.Errorf("%sconverting %d bytes of %d bit source to %d bit needs more bytes than this platform can address: %w",
+			errPrefix, srcLen, srcBits, dstBits, io.ErrShortBuffer)
+	}
+	if dstLen < need {
+		return 0, fmt.Errorf("%sdestination holds %d bytes, need %d: %w",
+			errPrefix, dstLen, need, io.ErrShortBuffer)
+	}
+	return need, nil
 }
 
 // Convert rewrites src, encoded as srcFormat at srcBits, into dst as signed
@@ -65,6 +121,13 @@ func ConvertedLen(srcLen, srcBits, dstBits int) int {
 // written. dst must be at least [ConvertedLen] bytes long; Convert never
 // allocates and never grows dst, reporting a short destination as an error
 // wrapping [io.ErrShortBuffer] instead.
+//
+// A src whose converted length would not fit in an int is refused with that
+// same error, because no dst could ever satisfy it. Growing dst and retrying
+// is futile in that one case, and the sentinel alone does not distinguish it:
+// a caller that means to tell them apart checks whether [ConvertedLen] reported
+// 0 for a src that holds at least one whole sample, which of the two refusals
+// is true only here.
 //
 // A src whose length is not a whole number of samples is not an error: the
 // whole samples are converted and the trailing partial sample is ignored, so
@@ -78,19 +141,9 @@ func ConvertedLen(srcLen, srcBits, dstBits int) int {
 //
 // See the package documentation for the shift, clamp and rounding rules.
 func Convert(dst, src []byte, srcFormat wav.SampleFormat, srcBits, dstBits int) (int, error) {
-	if err := Validate(srcFormat, srcBits); err != nil {
+	need, err := convertPlan(len(src), len(dst), srcFormat, srcBits, dstBits)
+	if err != nil {
 		return 0, err
-	}
-	// The destination is always integer PCM, so it is validated against that
-	// format rather than against srcFormat.
-	if err := Validate(wav.SampleFormatPCM, dstBits); err != nil {
-		return 0, err
-	}
-
-	need := ConvertedLen(len(src), srcBits, dstBits)
-	if len(dst) < need {
-		return 0, fmt.Errorf("%sdestination holds %d bytes, need %d: %w",
-			errPrefix, len(dst), need, io.ErrShortBuffer)
 	}
 	if need == 0 {
 		return 0, nil

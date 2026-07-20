@@ -56,8 +56,9 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 //
 // The returned [wav.StreamInfo] describes the returned bytes, not necessarily
 // the stored encoding, matching [Decoder.Info]. Its TotalFrames is the count
-// the header declares, which a file cut short overstates; the length of the
-// returned slice is what actually came back.
+// the header declares, which a file cut short overstates, and is 0 whenever no
+// credible count is available, including under [WithIgnoreLength]; the length
+// of the returned slice is what actually came back.
 //
 // b must hold the whole stream, because there is no source left to read on
 // from. A partial file therefore decodes as a truncated one: the audio that is
@@ -156,14 +157,24 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 // limit, which callers set to the largest length the platform can address.
 //
 // It divides rather than multiplying, because the multiplication is the thing
-// it guards: on a 32-bit target a long enough widening conversion wraps to a
-// small positive length, and a wrapped length is a short buffer that
-// [sample.Convert] would fill with the leading fraction of the audio and then
-// report as a success. A refusal is the honest answer, since a length that
-// cannot even be expressed could never have been allocated. It is the only case
-// this guard covers: a length that is expressible but still larger than the
-// memory available reaches make and fails there, the way any allocation too
-// large to satisfy does.
+// it guards: on a 32-bit target a long enough widening conversion leaves the
+// int range, and a length that cannot even be expressed could never have been
+// allocated. It is the only case this guard covers: a length that is
+// expressible but still larger than the memory available reaches make and fails
+// there, the way any allocation too large to satisfy does.
+//
+// [sample.ConvertedLen] applies the same ceiling and sample.Convert refuses a
+// source that exceeds it, so nothing here depends on this check for
+// correctness. It stays because it answers before anything is allocated, and
+// because it can name the exported call and the sizes involved, which an error
+// raised from inside the conversion cannot.
+//
+// The two refusals are not interchangeable. Convert wraps io.ErrShortBuffer,
+// which fits a function holding a dst that could in principle have been longer;
+// this one wraps nothing, because DecodeInterleaved takes no destination and
+// there is nothing for a caller to grow. The question does not arise in
+// practice: this check is the strictly earlier of the two, so the one inside
+// the conversion is unreachable from this path.
 func convertedBytesFit(samples, dstWidth, limit int) bool {
 	if samples <= 0 || dstWidth <= 0 {
 		return true
