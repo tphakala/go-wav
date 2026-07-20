@@ -36,6 +36,11 @@ var errNilReader = errors.New("go-wav/pcm: nil reader")
 // smaller window, not a promise the package makes.
 const readBufferSize = 4 << 10
 
+// streamBufferSize is the window used once a caller starts reading audio. It
+// is wide because a small one would be refilled once per caller read for any
+// caller reading in smaller blocks, multiplying the reads reaching the source.
+const streamBufferSize = 64 << 10
+
 // writeToBufferSize is the staging buffer WriteTo streams through. It is
 // independent of readBufferSize because here a larger block genuinely does
 // reduce the number of round trips.
@@ -106,6 +111,13 @@ type Decoder struct {
 	// have when the data chunk length is unknown. It is -1 when the source
 	// cannot seek.
 	dataStart int64
+
+	// stream is a wider buffer layered over br, created on the first read of
+	// audio. Header parsing wants a small window because a Decoder opened only
+	// to read Info pays for it; streaming wants a wide one because a caller
+	// reading in small blocks would otherwise refill a small window constantly.
+	// Deferring it gives each case what it needs, and costs the probe nothing.
+	stream *bufio.Reader
 
 	// convert is non-zero when samples are converted on the way out.
 	convert int
@@ -240,6 +252,16 @@ func (d *Decoder) Read(p []byte) (int, error) {
 	return d.readConverted(p)
 }
 
+// audio returns the reader to take sample data from, widening the buffer the
+// first time it is asked. Layering over br rather than over the source keeps
+// whatever br still holds, so no bytes are stranded.
+func (d *Decoder) audio() *bufio.Reader {
+	if d.stream == nil {
+		d.stream = bufio.NewReaderSize(d.br, streamBufferSize)
+	}
+	return d.stream
+}
+
 // readRaw copies stored bytes straight through, bounded by the data chunk.
 func (d *Decoder) readRaw(p []byte) (int, error) {
 	if d.remaining == 0 {
@@ -248,7 +270,7 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 	if d.remaining > 0 && int64(len(p)) > d.remaining {
 		p = p[:d.remaining]
 	}
-	n, err := d.br.Read(p)
+	n, err := d.audio().Read(p)
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
@@ -310,7 +332,7 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	}
 	buf := d.srcBuf[:want]
 
-	n, err := io.ReadFull(d.br, buf)
+	n, err := io.ReadFull(d.audio(), buf)
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
@@ -396,6 +418,8 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		return 0, err
 	}
 	d.br.Reset(d.src)
+	// The streaming buffer holds bytes from before the seek.
+	d.stream = nil
 	if d.hdr.DataSize >= 0 {
 		d.remaining = d.hdr.DataSize - offset
 	}
