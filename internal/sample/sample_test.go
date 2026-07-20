@@ -170,6 +170,12 @@ func TestConvertedLen(t *testing.T) {
 		{"negative length", -4, 16, 8, 0},
 		{"unsupported source depth", 8, 12, 16, 0},
 		{"unsupported destination depth", 8, 16, 12, 0},
+		// A widening conversion multiplies the sample count by the wider
+		// destination width, and on a 32-bit target that product leaves the
+		// int range well inside the sizes RF64 exists to serve. There is no
+		// number to return, so 0 joins the other cases Convert refuses.
+		{"widening past the int ceiling", math.MaxInt, 24, 32, 0},
+		{"widening exactly at the int ceiling", (math.MaxInt / 4) * 3, 24, 32, (math.MaxInt / 4) * 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -178,6 +184,39 @@ func TestConvertedLen(t *testing.T) {
 				t.Fatalf("ConvertedLen(%d, %d, %d) = %d, want %d", tt.srcLen, tt.srcBits, tt.dstBits, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestConvertPlanRefusesAnUnrepresentableDestination pins the one case where a
+// zero from convertedLen means "cannot" rather than "nothing to do". Convert
+// reads need == 0 as an empty conversion and returns (0, nil), so an overflow
+// arriving at that line would report success having written nothing, which is
+// the same silent loss of audio as the wrap it replaced.
+//
+// It is stated in lengths because the source that triggers it, a widening
+// conversion of something over 1.6 GB on a 32-bit target, is not a slice this
+// machine can allocate. The destination length is the largest an int holds, so
+// a failure here can only have come from the size limit and not from the
+// short-buffer check below it.
+func TestConvertPlanRefusesAnUnrepresentableDestination(t *testing.T) {
+	t.Parallel()
+	need, err := convertPlan(math.MaxInt, math.MaxInt, wav.SampleFormatPCM, 24, 32)
+	if !errors.Is(err, io.ErrShortBuffer) {
+		t.Fatalf("convertPlan for an unrepresentable destination = (%d, %v), want an error wrapping io.ErrShortBuffer",
+			need, err)
+	}
+}
+
+// TestConvertPlanAllowsASourceShorterThanOneSample is the other side of the
+// test above: the ordinary zero must stay an ordinary zero, or refusing the
+// overflow would have cost Convert its documented tolerance of a trailing
+// fragment.
+func TestConvertPlanAllowsASourceShorterThanOneSample(t *testing.T) {
+	t.Parallel()
+	need, err := convertPlan(2, 0, wav.SampleFormatPCM, 24, 32)
+	if err != nil || need != 0 {
+		t.Fatalf("convertPlan(2, 0, pcm, 24, 32) = (%d, %v), want (0, nil): a partial sample is ignored, not refused",
+			need, err)
 	}
 }
 

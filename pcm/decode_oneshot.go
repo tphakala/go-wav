@@ -156,14 +156,18 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 // limit, which callers set to the largest length the platform can address.
 //
 // It divides rather than multiplying, because the multiplication is the thing
-// it guards: on a 32-bit target a long enough widening conversion wraps to a
-// small positive length, and a wrapped length is a short buffer that
-// [sample.Convert] would fill with the leading fraction of the audio and then
-// report as a success. A refusal is the honest answer, since a length that
-// cannot even be expressed could never have been allocated. It is the only case
-// this guard covers: a length that is expressible but still larger than the
-// memory available reaches make and fails there, the way any allocation too
-// large to satisfy does.
+// it guards: on a 32-bit target a long enough widening conversion leaves the
+// int range, and a length that cannot even be expressed could never have been
+// allocated. It is the only case this guard covers: a length that is
+// expressible but still larger than the memory available reaches make and fails
+// there, the way any allocation too large to satisfy does.
+//
+// [sample.ConvertedLen] applies the same ceiling and sample.Convert refuses a
+// source that exceeds it, so nothing here depends on this check for
+// correctness. It stays because it answers before anything is allocated, and
+// because it can name the exported call and the sizes involved, which an error
+// raised from inside the conversion cannot. Should the two ever drift apart the
+// stricter one decides, and only the message a caller sees changes.
 func convertedBytesFit(samples, dstWidth, limit int) bool {
 	if samples <= 0 || dstWidth <= 0 {
 		return true
