@@ -20,10 +20,19 @@ var (
 // error rather than a condition a caller branches on, so it is not exported.
 var errNilReader = errors.New("go-wav/pcm: nil reader")
 
-// readBufferSize is the buffered reader's window. It must exceed the largest
-// header the parser inspects, and Peek needs only four bytes, so any sensible
-// size works; this one just amortises syscalls.
-const readBufferSize = 64 << 10
+// readBufferSize is the buffered reader's window.
+//
+// It only has to cover header parsing: the parser's largest inspection is a
+// 40-byte fmt chunk and its lookahead is Peek(4), and bufio reads straight into
+// the caller's slice once a request is at least this large, so a bigger window
+// buys nothing for streaming. Since a Decoder allocates one per stream, keeping
+// it small is what makes opening a file to read only its Info cheap.
+const readBufferSize = 4 << 10
+
+// writeToBufferSize is the staging buffer WriteTo streams through. It is
+// independent of readBufferSize because here a larger block genuinely does
+// reduce the number of round trips.
+const writeToBufferSize = 64 << 10
 
 // config holds decoder options. It is unexported, which makes Option opaque to
 // callers, matching go-aac.
@@ -328,7 +337,7 @@ func (d *Decoder) WriteTo(w io.Writer) (int64, error) {
 	if d.err != nil {
 		return 0, d.err
 	}
-	buf := make([]byte, readBufferSize)
+	buf := make([]byte, writeToBufferSize)
 	var total int64
 	for {
 		n, rerr := d.Read(buf)

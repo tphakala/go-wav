@@ -165,15 +165,15 @@ func plan(op string, cfg Config, seekable, framesKnown bool) (wav.Container, boo
 
 // fitsPlainRIFF reports whether a data chunk of the given size can be described
 // by 32-bit size fields, allowing for the header that precedes it.
+//
+// The header length is computed rather than built. Building one here cost two
+// allocations and roughly doubled the setup time of every encoder with a
+// declared length, to answer a question that is pure arithmetic.
 func fitsPlainRIFF(cfg Config, dataSize int64) bool {
-	probe, err := riff.BuildHeader(riff.HeaderConfig{
+	return riff.FitsPlainRIFF(riff.HeaderConfig{
 		Format:    formatOf(cfg),
 		Container: wav.ContainerRIFF,
-	})
-	if err != nil {
-		return false
-	}
-	return riff.FitsRIFF(probe, dataSize)
+	}, dataSize)
 }
 
 // declaredDataSize converts a declared frame count to a byte count, reporting

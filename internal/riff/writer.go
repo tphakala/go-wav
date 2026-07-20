@@ -204,7 +204,41 @@ func writeSizesInto(lay *Layout, container wav.Container, dataSize int64, frames
 // FitsRIFF reports whether a stream of dataSize bytes can be described by the
 // 32-bit size fields of a plain RIFF header.
 func FitsRIFF(lay *Layout, dataSize int64) bool {
-	return dataSize >= 0 && dataSize <= maxUint32 && riffSizeFor(lay, dataSize) <= maxUint32
+	return fitsRIFF(lay.DataOffset, dataSize)
+}
+
+// fitsRIFF is the size test expressed against a header length, so a caller who
+// only needs the answer does not have to build a header to get it.
+func fitsRIFF(headerLen, dataSize int64) bool {
+	return dataSize >= 0 && dataSize <= maxUint32 && headerLen+padded(dataSize)-8 <= maxUint32
+}
+
+// HeaderLen returns the number of bytes [BuildHeader] would emit for cfg,
+// computed rather than built.
+//
+// It exists so that deciding whether a stream needs RF64 costs arithmetic
+// instead of a throwaway header and its allocations, which matters because that
+// decision is made once per stream and a caller may write many short streams.
+//
+//nolint:gocritic // HeaderConfig by value matches BuildHeader and the by-value public Config.
+func HeaderLen(cfg HeaderConfig) int64 {
+	n := int64(FileHeaderSize)
+	if cfg.Container.Sized64() || cfg.ReserveDS64 {
+		n += int64(DS64ChunkSize)
+	}
+	n += int64(ChunkHeaderSize) + int64(fmtPayloadLen(cfg.Format))
+	if cfg.Format.Format == wav.SampleFormatFloat {
+		n += int64(ChunkHeaderSize) + int64(factPayloadSize)
+	}
+	return n + int64(ChunkHeaderSize) // the data chunk's own id and size
+}
+
+// FitsPlainRIFF reports whether a stream of dataSize bytes described by cfg
+// fits the 32-bit size fields of a plain RIFF header.
+//
+//nolint:gocritic // HeaderConfig by value, as above.
+func FitsPlainRIFF(cfg HeaderConfig, dataSize int64) bool {
+	return fitsRIFF(HeaderLen(cfg), dataSize)
 }
 
 // PatchSizes rewrites the size fields of an already written header in place,
