@@ -2,6 +2,7 @@ package pcm
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 )
@@ -50,6 +51,9 @@ func TestDecoderDoesNotAmplifySourceReads(t *testing.T) {
 			n, rerr := d.Read(buf)
 			got = append(got, buf[:n]...)
 			if rerr != nil {
+				if !errors.Is(rerr, io.EOF) {
+					t.Fatalf("chunk %d: read: %v", chunk, rerr)
+				}
 				break
 			}
 		}

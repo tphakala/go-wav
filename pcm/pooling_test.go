@@ -2,6 +2,7 @@ package pcm_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"runtime"
 	"testing"
@@ -141,7 +142,13 @@ func TestPooledDecoderReusesItsBuffers(t *testing.T) {
 			t.Fatal(err)
 		}
 		for {
+			// Only the end of the stream ends the drain. Treating any error
+			// as completion would let a decode regression pass this test
+			// while allocating nothing, which is the opposite of a guard.
 			if _, err := d.Read(sink); err != nil {
+				if !errors.Is(err, io.EOF) {
+					t.Fatalf("read: %v", err)
+				}
 				return
 			}
 		}

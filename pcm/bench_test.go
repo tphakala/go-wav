@@ -210,6 +210,8 @@ func BenchmarkDecoderResetReuse(b *testing.B) {
 	file := benchDecodeFixture(b, cfg, benchClipFrames)
 	sink := make([]byte, 4096)
 
+	wantBytes := int64(benchClipFrames * cfg.Channels * (cfg.BitDepth / 8))
+
 	var d pcm.Decoder
 	b.SetBytes(int64(len(file)))
 	b.ReportAllocs()
@@ -217,11 +219,19 @@ func BenchmarkDecoderResetReuse(b *testing.B) {
 		if err := d.Reset(bytes.NewReader(file)); err != nil {
 			b.Fatal(err)
 		}
+		var got int64
 		for {
-			_, rerr := d.Read(sink)
+			n, rerr := d.Read(sink)
+			got += int64(n)
 			if rerr != nil {
+				if !errors.Is(rerr, io.EOF) {
+					b.Fatalf("read: %v", rerr)
+				}
 				break
 			}
+		}
+		if got != wantBytes {
+			b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
 		}
 	}
 }
