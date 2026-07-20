@@ -201,3 +201,27 @@ func BenchmarkParseHeader(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkDecoderResetReuse measures the pooled path: one Decoder rebound to
+// stream after stream. Reuse is what Reset exists for, so a buffer this drops
+// instead of carrying shows up here as an allocation per stream.
+func BenchmarkDecoderResetReuse(b *testing.B) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
+	file := benchDecodeFixture(b, cfg, benchClipFrames)
+	sink := make([]byte, 4096)
+
+	var d pcm.Decoder
+	b.SetBytes(int64(len(file)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := d.Reset(bytes.NewReader(file)); err != nil {
+			b.Fatal(err)
+		}
+		for {
+			_, rerr := d.Read(sink)
+			if rerr != nil {
+				break
+			}
+		}
+	}
+}

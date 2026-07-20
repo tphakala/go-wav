@@ -22,19 +22,15 @@ var errNilReader = errors.New("go-wav/pcm: nil reader")
 
 // readBufferSize is the buffered reader's window.
 //
-// It is sized for header parsing, whose only window-sensitive operation is the
-// Peek(4) that resolves a missing pad byte; chunk payloads are read into their
-// own buffer and so are independent of it. A Decoder allocates one window per
-// stream, and keeping it small is what makes opening a file just to read its
-// Info cheap.
+// It is sized for header parsing and nothing else. The only window-sensitive
+// operation there is the Peek(4) that resolves a missing pad byte; chunk
+// payloads are read into their own buffer, so a chunk larger than this window
+// parses fine. Audio never comes through it, because reading samples switches
+// to the wider streamBufferSize window below.
 //
-// The trade this makes: a caller reading in blocks smaller than the window now
-// refills more often than it did at 64 KiB. A caller reading in larger blocks
-// is unaffected, because bufio hands a request at least as large as its buffer
-// straight through once the buffer has drained. That is an implementation
-// detail rather than a documented guarantee, so it is a reason to prefer the
-// smaller window, not a promise the package makes.
-const readBufferSize = 4 << 10
+// Keeping it small is what makes opening a file just to read its Info cheap,
+// which is the shape of any tool that scans a directory of recordings.
+const readBufferSize = 512
 
 // streamBufferSize is the window used once a caller starts reading audio. It
 // is wide because a small one would be refilled once per caller read for any
@@ -194,8 +190,17 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		}
 	}
 
+	// The streaming window is carried across, like the other buffers. Dropping
+	// it would make every Reset reallocate 64 KiB, which is the opposite of
+	// what pooling a Decoder is for.
+	stream := d.stream
+	if stream != nil {
+		stream.Reset(br)
+	}
+
 	*d = Decoder{
 		br:        br,
+		stream:    stream,
 		src:       r,
 		cfg:       cfg,
 		hdr:       hdr,

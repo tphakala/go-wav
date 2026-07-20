@@ -150,13 +150,19 @@ func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 
 // blockSamples is how many samples the conversion loops stage at a time.
 //
-// The size is bounded by the stack, not the cache. A goroutine starts with a
-// 2 KiB stack, so a block of 1024 would make these frames about 4.2 KiB and
-// force a stack growth on the first call from every fresh goroutine. At 256 the
-// frame is around 1.1 KiB and fits, and the throughput is the same: the win
-// comes from switching on the sample width once per block instead of once per
-// sample, and 256 amortises that just as well as 1024.
-const blockSamples = 256
+// 1024 costs a stack growth and earns it back. The buffer puts these frames at
+// roughly 4.2 KiB, over a goroutine's 2 KiB starting stack, so the first
+// conversion on a fresh goroutine pays one morestack, measured at about 50 ns.
+// Against that, dropping to 256 to fit under the starting stack measurably
+// slows the wider sources: 64-bit float conversion runs close to half as fast,
+// and the 24-bit paths lose a few percent, on every call rather than once per
+// goroutine.
+//
+// So the trade is a fixed ~50 ns per goroutine against a percentage of every
+// conversion, and the percentage wins. Note also that Go grows a goroutine's
+// starting stack adaptively, so a process doing this repeatedly stops paying
+// even the 50 ns.
+const blockSamples = 1024
 
 // decodeBlock reads len(out) samples of the given width into out as signed
 // values.
@@ -177,8 +183,10 @@ func decodeBlock(out []int32, src []byte, bits int) {
 	case 24:
 		src = src[:len(out)*3]
 		for i := range out {
-			b := src[i*3:]
-			u := uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16
+			b := src[i*3:][:3]
+			// Highest index first, as in encodeBlock, so the compiler drops
+			// the per-element checks on the other two.
+			u := uint32(b[2])<<16 | uint32(b[0]) | uint32(b[1])<<8
 			if u&0x800000 != 0 {
 				u |= 0xFF000000 // sign-extend bit 23 into the unused high byte
 			}
