@@ -1,6 +1,9 @@
 package wav
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Version is the module version.
 const Version = "0.1.0"
@@ -25,7 +28,8 @@ const (
 	ContainerBW64
 )
 
-// String returns the four-character magic of the container.
+// String returns the four-character magic of the container, or the string
+// "unknown" for a value outside the declared set.
 func (c Container) String() string {
 	switch c {
 	case ContainerRIFF:
@@ -39,7 +43,7 @@ func (c Container) String() string {
 	}
 }
 
-// Sized reports whether the container carries 64-bit sizes in a ds64 chunk.
+// Sized64 reports whether the container carries 64-bit sizes in a ds64 chunk.
 func (c Container) Sized64() bool {
 	return c == ContainerRF64 || c == ContainerBW64
 }
@@ -56,7 +60,9 @@ const (
 	SampleFormatFloat
 )
 
-// String returns a short name for the sample format.
+// String returns a short lower-case name for the sample format: "pcm" for
+// integer PCM, "float" for IEEE 754 floating point, and "unknown" for a value
+// outside the declared set.
 func (f SampleFormat) String() string {
 	switch f {
 	case SampleFormatPCM:
@@ -121,9 +127,15 @@ type StreamInfo struct {
 	// fmt chunk. It is 0 when the stream did not declare one.
 	ChannelMask uint32
 
-	// TotalFrames is the number of inter-channel frames in the stream. It is
-	// 0 when the count is not known, which happens for a stream whose data
-	// chunk size was absent or unreadable.
+	// TotalFrames is the number of inter-channel frames in the stream. When
+	// the data chunk size is known the count is derived from it, so it
+	// describes bytes that are present. When the size is absent or
+	// unreadable the count comes instead from whatever the header declared,
+	// a ds64 sampleCount or a fact chunk, which the reader passes through
+	// without checking it against the audio that follows: a declared count
+	// can therefore be any 64-bit value, up to and including
+	// [math.MaxUint64], and need not match the bytes the stream actually
+	// carries. It is 0 only when no source offered a count at all.
 	TotalFrames uint64
 }
 
@@ -142,20 +154,59 @@ func (si StreamInfo) BytesPerFrame() int {
 	return si.BytesPerSample() * si.Channels
 }
 
-// Duration is the length of the stream. It is 0 when TotalFrames or SampleRate
-// is 0, so a stream of unknown length reports 0 rather than a wrong answer.
+// Duration is the length of the stream, or 0 when that length cannot be stated
+// as a [time.Duration]. A caller that sees 0 knows the length is unavailable;
+// an unchecked computation would instead hand back a wrapped, meaningless
+// number. Such a number is as readily positive as negative, and the positive
+// ones are the more dangerous, because nothing about a plausible-looking length
+// invites a second look.
+//
+// A TotalFrames of 0 means the stream carried no frame count at all, and a
+// SampleRate of 0 or less cannot divide anything. The remaining zero cases are
+// arithmetic ceilings, and they are reachable because TotalFrames is not always
+// derived from bytes that exist: when the data chunk size is unknown the reader
+// falls back to a declared count, and a ds64 sampleCount is a raw 64-bit field
+// it passes through unchecked. Each step below therefore rejects what it cannot
+// carry. The conversion to int64 rejects a count above [math.MaxInt64]. The
+// whole-seconds term rejects a count whose whole seconds alone would pass
+// math.MaxInt64 nanoseconds, which is the ceiling time.Duration itself has,
+// about 292 years. The final addition rejects the few counts that clear both
+// and overflow only once the sub-second remainder is added. At 48 kHz the
+// largest frame count that survives all three is 442721857769029.
+//
+// The remainder term carries a bound of its own: rem * nsPerSecond overflows
+// for a sample rate above math.MaxInt64/nsPerSecond, roughly 9.22 GHz, so such
+// a rate is rejected outright. This is the one bound that gives up a length it
+// could in principle have represented, and it is deliberate. No file can reach
+// it, because a fmt chunk stores the sample rate in 32 bits, so the only way in
+// is a hand-built StreamInfo, and rejecting those costs less than the wider
+// arithmetic serving them would take.
+//
+// The whole-seconds-plus-remainder split is what buys the range in between. A
+// naive frames * time.Second wraps once the frame count passes
+// math.MaxInt64/nsPerSecond, about 53 hours of audio at 48 kHz; splitting the
+// multiplication off the whole seconds pushes that out to the full 292 years.
 //
 //nolint:gocritic // a value receiver is the right shape for a value type callers receive by value.
 func (si StreamInfo) Duration() time.Duration {
-	if si.TotalFrames == 0 || si.SampleRate <= 0 {
+	const nsPerSecond = int64(time.Second)
+	if si.TotalFrames == 0 || si.TotalFrames > math.MaxInt64 ||
+		si.SampleRate <= 0 || int64(si.SampleRate) > math.MaxInt64/nsPerSecond {
 		return 0
 	}
-	const nsPerSecond = int64(time.Second)
-	//nolint:gosec // G115: TotalFrames is bounded by the ds64 64-bit data size.
-	frames := int64(si.TotalFrames)
-	whole := frames / int64(si.SampleRate)
-	rem := frames % int64(si.SampleRate)
-	return time.Duration(whole*nsPerSecond + rem*nsPerSecond/int64(si.SampleRate))
+	//nolint:gosec // G115: the guard above rejects every TotalFrames above math.MaxInt64.
+	frames, rate := int64(si.TotalFrames), int64(si.SampleRate)
+	whole, rem := frames/rate, frames%rate
+	if whole > math.MaxInt64/nsPerSecond {
+		return 0
+	}
+	// rem is below rate, and rate is at most math.MaxInt64/nsPerSecond, so
+	// rem*nsPerSecond cannot overflow and remNs is below one second.
+	ns, remNs := whole*nsPerSecond, rem*nsPerSecond/rate
+	if ns > math.MaxInt64-remNs {
+		return 0
+	}
+	return time.Duration(ns + remNs)
 }
 
 // Sniff reports whether b begins with a RIFF, RF64 or BW64 WAVE header. It
