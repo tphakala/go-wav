@@ -51,29 +51,43 @@ func TestPlanAndCheckCapacityAgreeOnHeaderLength(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewEncoder: %v", err)
 			}
-			// What checkCapacity will enforce.
+			// Assert against the encoder's OWN layout rather than recomputing
+			// the probe here, which would only prove the test can copy the
+			// implementation. Every case asserts; the invariant holds whether
+			// or not the frame count was declared.
 			layLen := e.lay.DataOffset
-			// What plan consulted, when it consulted anything.
-			planLen := riff.HeaderLen(riff.HeaderConfig{
-				Format:    formatOf(tc.cfg),
-				Container: wav.ContainerRIFF,
-			})
-			framesKnown := tc.cfg.TotalFrames > 0
-			reserved := e.lay.DS64Offset >= 0 && !e.cont.Sized64()
+			declared := int64(tc.cfg.TotalFrames) * tc.cfg.bytesPerFrame()
 
-			t.Logf("layout header=%d, plan probe=%d, framesKnown=%v, reservedJUNK=%v, container=%v",
-				layLen, planLen, framesKnown, reserved, e.cont)
-
-			// The only path where plan's probe feeds the decision is the
-			// framesKnown one, and there the layout must not reserve ds64
-			// space, or the two lengths differ by exactly the reservation.
-			if framesKnown && reserved {
-				t.Errorf("plan sized the decision without a ds64 reservation (%d bytes) "+
-					"but the layout reserved one (%d bytes): the RF64 decision and the "+
-					"capacity limit disagree by %d bytes", planLen, layLen, layLen-planLen)
+			// The container the encoder chose must match what its own layout
+			// says about the declared size. A stream that fits plain RIFF must
+			// not have been promoted, and one that cannot fit must have been.
+			fits := riff.FitsRIFF(e.lay, declared)
+			if tc.cfg.TotalFrames > 0 && tc.cfg.RF64 == RF64Auto {
+				if fits && e.cont != wav.ContainerRIFF {
+					t.Errorf("declared %d bytes fits the emitted %d byte header, "+
+						"yet the encoder chose %v", declared, layLen, e.cont)
+				}
+				if !fits && e.cont != wav.ContainerRF64 {
+					t.Errorf("declared %d bytes does not fit the emitted %d byte header, "+
+						"yet the encoder chose %v", declared, layLen, e.cont)
+				}
 			}
-			if framesKnown && !reserved && !e.cont.Sized64() && layLen != planLen {
-				t.Errorf("header length %d != plan probe %d", layLen, planLen)
+
+			// A reserved ds64 makes the emitted header longer than the probe
+			// plan consults. That is only sound where plan does not consult
+			// the probe, which is the undeclared-length path.
+			reserved := e.lay.DS64Offset >= 0 && !e.cont.Sized64()
+			if reserved && tc.cfg.TotalFrames > 0 {
+				t.Errorf("plan sized its decision without a ds64 reservation but the "+
+					"layout reserved one: the RF64 decision and the capacity limit "+
+					"would disagree by %d bytes", riff.DS64ChunkSize)
+			}
+
+			// checkCapacity enforces against this layout, so it must describe a
+			// header the encoder actually wrote.
+			if layLen != int64(len(e.lay.Bytes)) {
+				t.Errorf("layout claims a %d byte header but emitted %d bytes",
+					layLen, len(e.lay.Bytes))
 			}
 		})
 	}

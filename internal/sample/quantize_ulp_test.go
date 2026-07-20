@@ -112,7 +112,7 @@ func putF64(b []byte, v float64) {
 // TestConvertFloatCrossesBlockBoundary drives the float path past the internal
 // block size, which nothing else in the suite does.
 //
-// convertFloatToInt stages through a fixed 1024-sample buffer. A regression in
+// convertFloatToInt stages through a fixed buffer of blockSamples. A regression in
 // its block arithmetic, processing only the first block or dropping a trailing
 // partial one, is invisible to any input that fits in a single block, and every
 // other float test in this package is smaller than that. The sizes below are

@@ -150,18 +150,18 @@ func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 
 // blockSamples is how many samples the conversion loops stage at a time.
 //
-// 1024 costs a stack growth and earns it back. The buffer puts these frames at
-// roughly 4.2 KiB, over a goroutine's 2 KiB starting stack, so the first
-// conversion on a fresh goroutine pays one morestack, measured at about 50 ns.
-// Against that, dropping to 256 to fit under the starting stack measurably
-// slows the wider sources: 64-bit float conversion runs close to half as fast,
-// and the 24-bit paths lose a few percent, on every call rather than once per
-// goroutine.
+// The buffer puts these frames at roughly 4.2 KiB, over a goroutine's 2 KiB
+// starting stack, so the first conversion on a fresh goroutine pays one stack
+// growth. Shrinking the block to fit under that stack was tried and dropped:
+// interleaved measurement put the difference at a couple of percent in favour
+// of the larger block, not significant per benchmark, and fitting would have
+// meant going down to about 160 samples rather than the 256 that looks like it
+// fits. Go also grows a goroutine's starting stack adaptively, so a process
+// converting repeatedly stops paying the growth at all.
 //
-// So the trade is a fixed ~50 ns per goroutine against a percentage of every
-// conversion, and the percentage wins. Note also that Go grows a goroutine's
-// starting stack adaptively, so a process doing this repeatedly stops paying
-// even the 50 ns.
+// The size is therefore chosen for the block loops themselves rather than for
+// the stack: large enough to amortise the per-block width switch, small enough
+// to stay in L1.
 const blockSamples = 1024
 
 // decodeBlock reads len(out) samples of the given width into out as signed

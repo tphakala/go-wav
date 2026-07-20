@@ -75,13 +75,7 @@ func TestBlockHelpersMatchOracle(t *testing.T) {
 func assertBlockHelpersMatchOracle(t *testing.T, bits int) {
 	t.Helper()
 	width := bits / 8
-	if bits == 24 {
-		width = 3
-	}
 	lo, hi := int64(-1)<<(bits-1), int64(1)<<(bits-1)-1
-	if bits == 8 {
-		lo, hi = -128, 127
-	}
 
 	// Every value at 8 bits, and a spread that includes both extremes
 	// and every sign-bit boundary at the wider depths.

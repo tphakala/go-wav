@@ -21,12 +21,12 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // TestDecoderDoesNotAmplifySourceReads pins that a caller reading in blocks
 // smaller than the internal window does not pay extra source reads for it.
 //
-// The window is sized for header parsing, which keeps a Decoder cheap to open.
-// Left naive that would cost streaming callers dearly: bufio only passes a
-// request through untouched when it is at least the window size, so a 4 KiB
-// window would refill once per read for every smaller block. The decoder
-// bypasses the window once drained, so the source sees roughly one read per
-// caller read regardless of the window.
+// The header window is small, which keeps a Decoder cheap to open. Left at
+// that, streaming would suffer: bufio only passes a request through untouched
+// when it is at least the window size, so a small window refills once per read
+// for every smaller block. The decoder layers a wide window over the small one
+// for audio, so the source sees roughly one read per streaming buffer whatever
+// block size the caller uses.
 func TestDecoderDoesNotAmplifySourceReads(t *testing.T) {
 	cfg := Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
 	payload := make([]byte, 1<<20) // 1 MiB of audio

@@ -423,8 +423,13 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		return 0, err
 	}
 	d.br.Reset(d.src)
-	// The streaming buffer holds bytes from before the seek.
-	d.stream = nil
+	// The streaming buffer holds bytes from before the seek, so it has to be
+	// emptied. Reset it onto br rather than dropping it: discarding would make
+	// every seek allocate a fresh 64 KiB window, and random access is exactly
+	// the workload that seeks repeatedly.
+	if d.stream != nil {
+		d.stream.Reset(d.br)
+	}
 	if d.hdr.DataSize >= 0 {
 		d.remaining = d.hdr.DataSize - offset
 	}
