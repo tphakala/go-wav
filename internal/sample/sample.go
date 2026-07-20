@@ -126,7 +126,8 @@ func convertPlan(srcLen, dstLen int, srcFormat wav.SampleFormat, srcBits, dstBit
 // same error, because no dst could ever satisfy it. Growing dst and retrying
 // is futile in that one case, and the sentinel alone does not distinguish it:
 // a caller that means to tell them apart checks whether [ConvertedLen] reported
-// 0 for a src that holds at least one whole sample, which is true only here.
+// 0 for a src that holds at least one whole sample, which of the two refusals
+// is true only here.
 //
 // A src whose length is not a whole number of samples is not an error: the
 // whole samples are converted and the trailing partial sample is ignored, so

@@ -1324,6 +1324,29 @@ func TestFrameCountFallbacks(t *testing.T) {
 		}
 	})
 
+	// The shape an interrupted RF64 writer leaves behind: ds64 present but
+	// neither of its sizes stamped, and a fact chunk holding the supersession
+	// sentinel it was given when the count outgrew 32 bits. Read as a number
+	// that sentinel claims 4294967295 frames, nearly 25 hours at 48 kHz, for a
+	// file that carried 400 bytes.
+	t.Run("fact_chunk_sentinel_does_not_become_a_frame_count", func(t *testing.T) {
+		b := cat(
+			fileHeader(idRF64, sentinel32, idWAVE),
+			chunk(idDS64, ds64Payload(999, 0, 0)),
+			chunk(idFmt, stdFmtPayload()),
+			chunk(idFact, le32(sentinel32)),
+			chunkLying(idData, sentinel32, make([]byte, 400)),
+		)
+		h, err := parseBytes(b)
+		if err != nil {
+			t.Fatalf("ParseHeader: %v", err)
+		}
+		if h.Info.TotalFrames != 0 {
+			t.Errorf("TotalFrames = %d, want 0: the fact chunk held the supersession sentinel, not a count",
+				h.Info.TotalFrames)
+		}
+	})
+
 	// A ds64 whose data size was never stamped but whose sample count was is
 	// the combination that reaches the fallback, so it is also the combination
 	// that reaches it carrying a count nothing has checked. TotalFrames is
@@ -1355,7 +1378,8 @@ func TestFrameCountFallbacks(t *testing.T) {
 // past the limit and that boundary is therefore unreachable through the parser.
 // The limit is the maxDataSize ceiling resolveDataSize applies to a measured
 // length, divided by the frame width: a declared count is credible only if the
-// audio it claims could fit in a stream this format is able to describe.
+// audio it claims stays under the ceiling this reader will believe, which is a
+// policy of the reader and well below what RF64 itself can describe.
 func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 	t.Parallel()
 	const blockAlign = 4
@@ -1420,14 +1444,32 @@ func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 			want:       4321,
 		},
 		{
-			// A rejected ds64 count does not fall through. The fact chunk in a
-			// 64-bit container is the superseded field, carrying the 0xFFFFFFFF
-			// sentinel whenever the count passed 2^32, so consulting it here
-			// would publish that sentinel as a frame count.
+			// A rejected ds64 count does not fall through. The fact chunk is
+			// the field ds64 supersedes, so it is the less trustworthy of the
+			// two and cannot stand in for the one just refused.
+			//
+			// The fact value here must not be the sentinel: that is refused on
+			// its own account below, which would leave this row green whether
+			// the fall-through existed or not.
 			name:       "a rejected sample count does not fall through to the fact chunk",
 			dataSize:   sizeUnknown,
 			blockAlign: blockAlign,
 			ds64:       ds64Info{sampleCount: limit + 1},
+			haveDS64:   true,
+			factFrames: 1000,
+			want:       0,
+		},
+		{
+			// 0xFFFFFFFF in the fact chunk is the superseded sentinel, the
+			// same value resolveDataSize already refuses to read as a length.
+			// It arrives whenever the real count outgrew 32 bits, so believing
+			// it reports 4294967295 frames for a file that said it did not
+			// know. Reached whenever ds64 stamped no sample count, which is
+			// the interrupted-writer case the ds64 fallback exists to serve.
+			name:       "the fact chunk sentinel is not a count",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: 0},
 			haveDS64:   true,
 			factFrames: uint64(sentinel32),
 			want:       0,

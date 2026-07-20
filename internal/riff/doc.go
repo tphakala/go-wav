@@ -46,9 +46,10 @@
 // missing pad byte, a data size of zero or 0xFFFFFFFF, a declared size that
 // runs past the end of the file, trailing bytes after the audio, chunks in any
 // order before fmt and data, and unknown chunks anywhere. A declared frame
-// count above the ceiling the reader will believe is reported as unknown
-// rather than repeated to the caller. It does not guess a
-// sample format: a stream it cannot decode is reported, never reinterpreted,
+// count above the ceiling the reader will believe, or a fact chunk holding the
+// supersession sentinel, is reported as unknown rather than repeated to the
+// caller. It does not guess a sample format: a stream it cannot decode is
+// reported, never reinterpreted,
 // and a fmt chunk naming A-law or mu-law at a width other than the 8 bits
 // G.711 defines is refused rather than read as though the depth field were the
 // mistake.

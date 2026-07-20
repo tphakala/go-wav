@@ -67,9 +67,11 @@ const maxUint32 = int64(1)<<32 - 1
 // Two kinds of declaration are checked against it: a ds64 data size, directly,
 // and a declared frame count (a ds64 sampleCount or a fact chunk count),
 // against the ceiling divided by the frame width, since a count and a length
-// describe the same bytes in different units. The 32-bit size fields need no
-// ceiling, sitting far below this one by construction, and the auxiliary chunk
-// payloads the reader buffers are bounded separately by maxChunkPayload.
+// describe the same bytes in different units. Where the frame width is not
+// known there is nothing to divide by and the bare ceiling applies. The 32-bit
+// size fields need no ceiling, sitting far below this one by construction, and
+// the auxiliary chunk payloads the reader buffers are bounded separately by
+// maxChunkPayload.
 const maxDataSize uint64 = 1 << 62
 
 // sentinel32 is the value RF64 writes into the 32-bit size fields it has

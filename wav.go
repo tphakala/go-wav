@@ -187,12 +187,14 @@ type StreamInfo struct {
 	// reader will accept on a header's word alone. A count that fails is
 	// reported as unknown instead.
 	//
-	// It is 0 whenever a frame count is unavailable or genuinely zero: no
-	// source offered one, the only count on offer was not credible, the
-	// decoder was told to ignore the declared length, or the data chunk holds
-	// less than one whole frame. Only the last of those says anything about
-	// how much audio is present, so a caller that needs the real end of the
-	// audio reads until io.EOF rather than inferring it from this field.
+	// Read back from a decoder it is 0 whenever a frame count is unavailable
+	// or genuinely zero: no source offered one, the only count on offer was
+	// not credible, the decoder was told to ignore the declared length, or the
+	// data chunk holds less than one whole frame. Only the last of those says
+	// anything about how much audio is present, so a caller that needs the
+	// real end of the audio reads until io.EOF rather than inferring it from
+	// this field. An encoder fills the same struct from what it has written,
+	// where 0 does mean no frames yet.
 	TotalFrames uint64
 }
 
