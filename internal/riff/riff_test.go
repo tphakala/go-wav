@@ -1408,17 +1408,29 @@ func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 			want:       0,
 		},
 		{
-			// An implausible declaration is no declaration, so the chain
-			// should carry on to the next source rather than stopping at the
-			// one it just rejected. Discarding a usable fact count because a
-			// sibling field was corrupt loses information for nothing.
-			name:       "a rejected sample count falls through to the fact chunk",
+			// ds64 wins over the fact chunk when both are present and usable.
+			// Without a row where the two disagree, inverting that precedence
+			// leaves the whole table green.
+			name:       "an accepted sample count beats the fact chunk",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: 4321},
+			haveDS64:   true,
+			factFrames: 1000,
+			want:       4321,
+		},
+		{
+			// A rejected ds64 count does not fall through. The fact chunk in a
+			// 64-bit container is the superseded field, carrying the 0xFFFFFFFF
+			// sentinel whenever the count passed 2^32, so consulting it here
+			// would publish that sentinel as a frame count.
+			name:       "a rejected sample count does not fall through to the fact chunk",
 			dataSize:   sizeUnknown,
 			blockAlign: blockAlign,
 			ds64:       ds64Info{sampleCount: limit + 1},
 			haveDS64:   true,
-			factFrames: 1000,
-			want:       1000,
+			factFrames: uint64(sentinel32),
+			want:       0,
 		},
 		{
 			name:       "fact frames at the limit are kept",
@@ -1438,6 +1450,11 @@ func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 			// With no frame width there is nothing to multiply by, so the
 			// count is bounded on its own. maxDataSize remains the ceiling,
 			// which is what keeps int64(TotalFrames) from going negative.
+			//
+			// Like the fact-chunk boundary above, this arm is unreachable
+			// through the parser: parseFmt always recomputes BlockAlign from
+			// the bit depth and channel count, both of which it has already
+			// rejected as zero, so a parsed header never carries a width of 0.
 			name:       "unknown block align still bounds the count",
 			dataSize:   sizeUnknown,
 			blockAlign: 0,

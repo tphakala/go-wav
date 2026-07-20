@@ -3,7 +3,6 @@ package pcm
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"math"
 	"sync"
 
@@ -57,9 +56,9 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 //
 // The returned [wav.StreamInfo] describes the returned bytes, not necessarily
 // the stored encoding, matching [Decoder.Info]. Its TotalFrames is the count
-// the header declares, which a file cut short overstates and which is 0 when
-// the header declared no credible count at all; the length of the returned
-// slice is what actually came back.
+// the header declares, which a file cut short overstates, and is 0 whenever no
+// credible count is available, including under [WithIgnoreLength]; the length
+// of the returned slice is what actually came back.
 //
 // b must hold the whole stream, because there is no source left to read on
 // from. A partial file therefore decodes as a truncated one: the audio that is
@@ -138,8 +137,8 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	// never holds more than one batch, so it can never get near the limit.
 	if !convertedBytesFit(len(audio)/srcWidth, dstWidth, math.MaxInt) {
 		return wav.StreamInfo{}, nil, fmt.Errorf(
-			"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address: %w",
-			len(audio), d.info.SourceBitDepth, d.convert, io.ErrShortBuffer)
+			"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",
+			len(audio), d.info.SourceBitDepth, d.convert)
 	}
 	out := make([]byte, sample.ConvertedLen(len(audio), d.info.SourceBitDepth, d.convert))
 	n, err := sample.Convert(out, audio, d.info.SourceFormat, d.info.SourceBitDepth, d.convert)
@@ -168,10 +167,14 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 // source that exceeds it, so nothing here depends on this check for
 // correctness. It stays because it answers before anything is allocated, and
 // because it can name the exported call and the sizes involved, which an error
-// raised from inside the conversion cannot. Both refusals wrap
-// [io.ErrShortBuffer], so whichever fires first the caller matches on the same
-// sentinel and only the wording differs; that is the whole reason this one
-// wraps a sentinel it could otherwise have done without.
+// raised from inside the conversion cannot.
+//
+// The two refusals are not interchangeable. Convert wraps io.ErrShortBuffer,
+// which fits a function holding a dst that could in principle have been longer;
+// this one wraps nothing, because DecodeInterleaved takes no destination and
+// there is nothing for a caller to grow. The question does not arise in
+// practice: this check is the strictly earlier of the two, so the one inside
+// the conversion is unreachable from this path.
 func convertedBytesFit(samples, dstWidth, limit int) bool {
 	if samples <= 0 || dstWidth <= 0 {
 		return true

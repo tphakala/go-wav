@@ -123,10 +123,10 @@ func convertPlan(srcLen, dstLen int, srcFormat wav.SampleFormat, srcBits, dstBit
 // wrapping [io.ErrShortBuffer] instead.
 //
 // A src whose converted length would not fit in an int is refused with that
-// same error, because no dst could ever satisfy it. [ConvertedLen] reports 0
-// for such a source, so sizing dst from it yields an empty buffer rather than
-// an adequate one, and this is the one [io.ErrShortBuffer] a caller must not
-// answer by growing dst and retrying.
+// same error, because no dst could ever satisfy it. Growing dst and retrying
+// is futile in that one case, and the sentinel alone does not distinguish it:
+// a caller that means to tell them apart checks whether [ConvertedLen] reported
+// 0 for a src that holds at least one whole sample, which is true only here.
 //
 // A src whose length is not a whole number of samples is not an error: the
 // whole samples are converted and the trailing partial sample is ignored, so

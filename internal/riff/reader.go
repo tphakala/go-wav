@@ -196,13 +196,13 @@ func resolveFrames(dataSize, blockAlign int64, ds64 ds64Info, haveDS64 bool, fac
 		return uint64(dataSize / blockAlign)
 	}
 	if haveDS64 && ds64.sampleCount != 0 {
-		// A count the bound rejects is treated as one the header never
-		// offered, so the chain carries on rather than stopping at the source
-		// it just refused. Discarding a usable fact chunk because a sibling
-		// field was corrupt would lose information for nothing.
-		if frames := boundedFrames(ds64.sampleCount, blockAlign); frames != 0 {
-			return frames
-		}
+		// A rejected ds64 count stops here rather than falling through to the
+		// fact chunk. In a 64-bit container the 32-bit fact count is the
+		// superseded field, and this library's own writer stamps the 0xFFFFFFFF
+		// sentinel into it for any count past 2^32, so the fallback would
+		// mostly publish that sentinel as though it were 4294967295 frames.
+		// Trading "unknown" for a number that means unknown is not a recovery.
+		return boundedFrames(ds64.sampleCount, blockAlign)
 	}
 	return boundedFrames(factFrames, blockAlign)
 }

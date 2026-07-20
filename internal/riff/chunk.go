@@ -61,12 +61,15 @@ const maxUint32 = int64(1)<<32 - 1
 // separates a plausible declaration from a corrupt or hostile one without
 // having to guess where real files stop.
 //
-// It bounds the 64-bit quantities a ds64 chunk declares: the data size
-// directly, and the sample count and fact chunk count once divided by the
-// frame width, since those describe the same bytes in different units. The
-// 32-bit size fields need no such ceiling, sitting far below it by
-// construction, and the auxiliary chunk payloads the reader buffers are
-// bounded separately by maxChunkPayload.
+// It is a policy of this reader rather than a limit of the format, which can
+// describe more than the reader will accept on a header's word alone.
+//
+// Two kinds of declaration are checked against it: a ds64 data size, directly,
+// and a declared frame count (a ds64 sampleCount or a fact chunk count),
+// against the ceiling divided by the frame width, since a count and a length
+// describe the same bytes in different units. The 32-bit size fields need no
+// ceiling, sitting far below this one by construction, and the auxiliary chunk
+// payloads the reader buffers are bounded separately by maxChunkPayload.
 const maxDataSize uint64 = 1 << 62
 
 // sentinel32 is the value RF64 writes into the 32-bit size fields it has
