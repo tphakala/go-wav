@@ -23,8 +23,6 @@ import (
 // rediscovering: the probe only feeds the decision when the frame count is
 // known, and that is exactly the path where plan returns no reservation.
 func TestPlanAndCheckCapacityAgreeOnHeaderLength(t *testing.T) {
-	seekable := &memSeekerC{}
-
 	cases := []struct {
 		name     string
 		cfg      Config
@@ -41,11 +39,12 @@ func TestPlanAndCheckCapacityAgreeOnHeaderLength(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var w io.Writer
+			// A fresh sink per case. Sharing one would carry the previous
+			// case's write offset and backing slice into this one, making the
+			// result depend on the order the cases run in.
+			var w io.Writer = io.Discard
 			if tc.seekable {
-				w = seekable
-			} else {
-				w = io.Discard
+				w = &memSeekerC{}
 			}
 			e, err := NewEncoder(w, tc.cfg)
 			if err != nil {
