@@ -773,6 +773,55 @@ func TestDecoderRF64WithoutDS64(t *testing.T) {
 	}
 }
 
+// TestDecoderReadsBW64 pins the read side of BW64 through the public API.
+//
+// The library writes RF64 and never BW64, because the ADM metadata in the axml
+// and chna chunks is what makes a file BW64 and none of it is written here. The
+// fixture is therefore an RF64 stream with its magic swapped, which for a file
+// carrying no such metadata is the whole of the difference between the two. The
+// decoder must report the container it saw and hand the audio back unchanged.
+//
+// The trailing garbage is what gives the test teeth. A BW64 stream carries its
+// real data length in the ds64 chunk, because the 32-bit field holds only the
+// sentinel, so a decoder that stopped treating BW64 as a 64-bit container would
+// find no length at all and read to the end of the stream. Without something
+// after the data chunk that failure is invisible: the file ends where the audio
+// ends, so reading to EOF returns the right bytes by accident, and TotalFrames
+// falls back to the ds64 sampleCount and comes out right too.
+func TestDecoderReadsBW64(t *testing.T) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2, RF64: pcm.RF64Always}
+	src := pattern(400)
+	file := encodeFixture(t, cfg, src)
+	if got := string(file[:4]); got != magicRF64 {
+		t.Fatalf("fixture magic = %q, want %q", got, magicRF64)
+	}
+	copy(file[:4], magicBW64)
+	file = append(file, []byte("trailing bytes that are not audio")...)
+
+	d, err := pcm.NewDecoder(bytes.NewReader(file))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	info := d.Info()
+	if info.Container != wav.ContainerBW64 {
+		t.Errorf("Container = %v, want %v", info.Container, wav.ContainerBW64)
+	}
+	if !info.Container.Sized64() {
+		t.Errorf("Container.Sized64() = false, want true; BW64 carries its sizes in a ds64 chunk")
+	}
+	if want := uint64(len(src) / 4); info.TotalFrames != want {
+		t.Errorf("TotalFrames = %d, want %d", info.TotalFrames, want)
+	}
+	got, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, src) {
+		t.Errorf("read %d bytes, want the %d written; the ds64 data length was not honoured",
+			len(got), len(src))
+	}
+}
+
 // TestDecoderReset reuses a decoder across streams.
 func TestDecoderReset(t *testing.T) {
 	first := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}

@@ -11,9 +11,10 @@ import (
 type HeaderConfig struct {
 	Format Format
 
-	// Container selects the flavour to write. ContainerRIFF with
-	// ReserveDS64 set is the streaming case: a plain RIFF header that can
-	// later be rewritten in place as RF64.
+	// Container selects the flavour to write, which is RIFF or RF64.
+	// ContainerRIFF with ReserveDS64 set is the streaming case: a plain RIFF
+	// header that can later be rewritten in place as RF64. BW64 is read
+	// only and is rejected here; see wav.ContainerBW64.
 	Container wav.Container
 
 	// ReserveDS64 emits a JUNK chunk sized to be overwritten by a ds64,
@@ -76,7 +77,15 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 	// would emit a seven-byte "unknown" where four bytes belong and corrupt
 	// every offset after it.
 	switch cfg.Container {
-	case wav.ContainerRIFF, wav.ContainerRF64, wav.ContainerBW64:
+	case wav.ContainerRIFF, wav.ContainerRF64:
+	case wav.ContainerBW64:
+		// BW64 is read only. What separates it from RF64 is the ADM metadata
+		// it carries in axml and chna chunks, and this library emits neither,
+		// so a header written with the BW64 magic would be an RF64 file under
+		// a name promising metadata it does not hold. See wav.ContainerBW64.
+		return nil, fmt.Errorf(
+			"go-wav/internal/riff: %w: BW64 is read only, because none of the ADM metadata "+
+				"that separates it from RF64 is written", wav.ErrUnsupported)
 	default:
 		return nil, fmt.Errorf("go-wav/internal/riff: unknown container %d", cfg.Container)
 	}
@@ -291,14 +300,24 @@ func PatchSizes(w io.WriteSeeker, lay *Layout, container wav.Container, dataSize
 // This is the technique ffmpeg calls "-rf64 auto". It requires that the header
 // was built with ReserveDS64, since there is otherwise nowhere to put the ds64
 // without shifting every byte of audio.
+//
+// The container argument exists to mirror [PatchSizes], and RF64 is the only
+// value it accepts: BW64 is the other 64-bit container, and this library reads
+// it without ever writing it. See wav.ContainerBW64.
 func UpgradeToRF64(w io.WriteSeeker, lay *Layout, container wav.Container, dataSize int64, frames uint64) error {
+	// The container is checked first because it validates the caller's
+	// argument, while the reserved space describes the header that was already
+	// built. Asking for BW64 is wrong whether or not a ds64 was reserved, and
+	// reporting the missing reservation instead would send the caller after
+	// the wrong problem.
+	if container != wav.ContainerRF64 {
+		return fmt.Errorf(
+			"go-wav/internal/riff: cannot upgrade to %s: RF64 is the only 64-bit container written",
+			container)
+	}
 	if lay.DS64Offset < 0 {
 		return fmt.Errorf(
 			"go-wav/internal/riff: cannot upgrade to %s: no ds64 space was reserved in the header", container)
-	}
-	if !container.Sized64() {
-		return fmt.Errorf("go-wav/internal/riff: cannot upgrade to %s, which is not a 64-bit container",
-			container)
 	}
 
 	patched := &Layout{

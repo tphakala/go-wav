@@ -1,5 +1,6 @@
 // Package wav provides the shared types and error sentinels for reading and
-// writing WAV audio, including the 64-bit RF64 and BW64 extensions.
+// writing WAV audio. It reads the 64-bit RF64 and BW64 extensions and writes
+// RF64.
 //
 // The streaming API lives in the pcm subpackage, so that this package can hold
 // the types both layers need without an import cycle. Callers who want to
@@ -10,11 +11,15 @@
 //
 // Three container flavours share one chunk layout. Plain RIFF stores sizes in
 // 32-bit fields and therefore cannot describe a file of 4 GiB or more. RF64
-// (EBU Tech 3306) and BW64 (ITU-R BS.2088) lift that limit by writing a
-// sentinel into the 32-bit fields and carrying the real 64-bit sizes in a ds64
-// chunk. BW64 is structurally identical to RF64 and differs only in its magic
-// and in the metadata chunks it is expected to carry, so this package reads
-// both and reports which one it saw in [StreamInfo.Container].
+// (EBU Tech 3306) and BW64 (ITU-R BS.2088) lift that limit with a sentinel in
+// the 32-bit fields and the real 64-bit sizes carried in a ds64 chunk. BW64 is
+// structurally identical to RF64 and differs only in its magic and in the
+// metadata chunks it is expected to carry, so this package reads both and
+// reports which one it saw in [StreamInfo.Container].
+//
+// Writing is RIFF or RF64. BW64 is read only, because the ADM metadata in its
+// axml and chna chunks is what makes a file BW64 rather than RF64 and this
+// library writes no such chunk; see [ContainerBW64].
 //
 // # Sample formats
 //

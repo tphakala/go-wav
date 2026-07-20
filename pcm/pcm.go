@@ -8,6 +8,10 @@ import (
 
 // RF64Mode selects how an [Encoder] handles the 4 GiB limit of the 32-bit RIFF
 // size fields. The vocabulary matches ffmpeg's -rf64 flag.
+//
+// It is also the whole of the container choice, because the containers written
+// are RIFF and RF64. BW64 is read but never written; see
+// [github.com/tphakala/go-wav.ContainerBW64] for why.
 type RF64Mode int
 
 const (
