@@ -42,9 +42,11 @@ func TestPlanAndCheckCapacityAgreeOnHeaderLength(t *testing.T) {
 			// A fresh sink per case. Sharing one would carry the previous
 			// case's write offset and backing slice into this one, making the
 			// result depend on the order the cases run in.
-			var w io.Writer = io.Discard
+			var w io.Writer
 			if tc.seekable {
 				w = &memSeekerC{}
+			} else {
+				w = io.Discard
 			}
 			e, err := NewEncoder(w, tc.cfg)
 			if err != nil {
