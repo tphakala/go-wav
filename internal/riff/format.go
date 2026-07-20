@@ -149,11 +149,12 @@ func parseFmt(b []byte) (Format, error) {
 		return Format{}, err
 	}
 
-	// A block align of zero is unusable and is repaired from the fields that
-	// are present, which is what every tolerant reader does.
-	if f.BlockAlign <= 0 {
-		f.BlockAlign = (f.BitDepth + 7) / 8 * f.Channels
-	}
+	// For an uncompressed encoding the frame size follows from the channel
+	// count and the sample width, so a declared nBlockAlign that disagrees
+	// is a writer bug rather than information. Trusting it would corrupt
+	// every frame count derived from the data chunk size, so the derived
+	// value always wins.
+	f.BlockAlign = (f.BitDepth + 7) / 8 * f.Channels
 	// ValidBits wider than the container is nonsense; treat it as absent
 	// rather than propagating it.
 	if f.ValidBits > f.BitDepth {

@@ -70,6 +70,14 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 	if cfg.Format.SampleRate <= 0 {
 		return nil, fmt.Errorf("go-wav/internal/riff: sample rate %d must be positive", cfg.Format.SampleRate)
 	}
+	// The magic is written from Container.String, so an out-of-range value
+	// would emit a seven-byte "unknown" where four bytes belong and corrupt
+	// every offset after it.
+	switch cfg.Container {
+	case wav.ContainerRIFF, wav.ContainerRF64, wav.ContainerBW64:
+	default:
+		return nil, fmt.Errorf("go-wav/internal/riff: unknown container %d", cfg.Container)
+	}
 
 	sized64 := cfg.Container.Sized64()
 	writeFact := cfg.Format.Format == wav.SampleFormatFloat
@@ -203,6 +211,15 @@ func FitsRIFF(lay *Layout, dataSize int64) bool {
 // It is the seekable-sink path: the header goes out with zeroes, audio is
 // streamed, and the true sizes are stamped at Close.
 func PatchSizes(w io.WriteSeeker, lay *Layout, container wav.Container, dataSize int64, frames uint64) error {
+	// The magic was fixed when the header was built, so patching sizes for a
+	// different container would stamp 64-bit sizes into a file still claiming
+	// to be plain RIFF, or the reverse. Changing container is what
+	// UpgradeToRF64 is for.
+	if got := string(lay.Bytes[:4]); got != container.String() {
+		return fmt.Errorf(
+			"go-wav/internal/riff: cannot patch a %q header as %s; use UpgradeToRF64 to change container",
+			got, container)
+	}
 	patched := &Layout{
 		Bytes:          make([]byte, len(lay.Bytes)),
 		RIFFSizeOffset: lay.RIFFSizeOffset,

@@ -157,11 +157,20 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 // unknown and the caller reads to EOF.
 func resolveDataSize(size uint32, container wav.Container, haveDS64 bool, ds64 ds64Info) int64 {
 	if container.Sized64() && haveDS64 {
-		//nolint:gosec // G115: guarded below against exceeding int64.
-		if ds64.dataSize <= uint64(1)<<62 {
-			return int64(ds64.dataSize)
+		// A ds64 dataSize of zero means the sizes were never stamped, so
+		// the length is unknown and the caller reads to the end.
+		//
+		// A header interrupted before its sizes were patched is
+		// indistinguishable from one describing an empty stream: both are
+		// internally consistent. Recovery is the useful reading, since a
+		// 64-bit container holding no audio is a contradiction in terms,
+		// and reading to the end of a genuinely empty stream yields nothing
+		// anyway.
+		if ds64.dataSize == 0 || ds64.dataSize > uint64(1)<<62 {
+			return sizeUnknown
 		}
-		return sizeUnknown
+		//nolint:gosec // G115: bounded by the check above.
+		return int64(ds64.dataSize)
 	}
 	if size == 0 || size == sentinel32 {
 		return sizeUnknown
@@ -240,11 +249,14 @@ func readPayload(br *bufio.Reader, size uint32) ([]byte, error) {
 		return nil, nil
 	}
 	buf := make([]byte, size)
-	if _, err := io.ReadFull(br, buf); err != nil {
+	n, err := io.ReadFull(br, buf)
+	if err != nil {
 		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-			// A chunk truncated by the end of the file is tolerated: the
-			// bytes that exist are parsed and the rest treated as absent.
-			return buf, nil
+			// A chunk truncated by the end of the file is tolerated, but
+			// only the bytes that actually exist are handed back. Returning
+			// the full buffer would feed the parser manufactured zeroes and
+			// let a truncated fmt chunk parse as though it were complete.
+			return buf[:n], nil
 		}
 		return nil, err
 	}

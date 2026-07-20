@@ -28,7 +28,11 @@ const readBufferSize = 64 << 10
 // config holds decoder options. It is unexported, which makes Option opaque to
 // callers, matching go-aac.
 type config struct {
-	convertTo    int
+	convertTo int
+	// convertSet distinguishes "no conversion asked for" from an explicit
+	// request for a nonsensical width, so WithConvertTo(0) is rejected
+	// rather than silently ignored.
+	convertSet   bool
 	ignoreLength bool
 }
 
@@ -48,7 +52,10 @@ type Option func(*config)
 // [Decoder.Info] reports the converted width, since it describes what Read
 // yields; the stored width remains available as SourceBitDepth.
 func WithConvertTo(bitDepth int) Option {
-	return func(c *config) { c.convertTo = bitDepth }
+	return func(c *config) {
+		c.convertTo = bitDepth
+		c.convertSet = true
+	}
 }
 
 // WithIgnoreLength makes the decoder ignore the declared data chunk size and
@@ -76,6 +83,13 @@ type Decoder struct {
 	// remaining counts audio bytes left in the data chunk, or -1 when the
 	// length is unknown and the decoder reads to EOF.
 	remaining int64
+
+	// dataStart is the absolute offset of the first audio byte, recorded
+	// once while the parser still rests exactly there. Deriving it later
+	// from the current position would need a byte count the decoder does not
+	// have when the data chunk length is unknown. It is -1 when the source
+	// cannot seek.
+	dataStart int64
 
 	// convert is non-zero when samples are converted on the way out.
 	convert int
@@ -116,7 +130,7 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 			opt(&cfg)
 		}
 	}
-	if cfg.convertTo != 0 {
+	if cfg.convertSet {
 		if err := sample.Validate(wav.SampleFormatPCM, cfg.convertTo); err != nil {
 			return fmt.Errorf("go-wav/pcm: %s: WithConvertTo: %w", op, err)
 		}
@@ -138,6 +152,15 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		return err
 	}
 
+	// The parser stopped on the first audio byte, so this is the one moment
+	// the data chunk's absolute offset can be observed directly.
+	dataStart := int64(-1)
+	if seeker, ok := r.(io.Seeker); ok {
+		if pos, serr := seeker.Seek(0, io.SeekCurrent); serr == nil {
+			dataStart = pos - int64(br.Buffered())
+		}
+	}
+
 	*d = Decoder{
 		br:        br,
 		src:       r,
@@ -145,6 +168,7 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		hdr:       hdr,
 		info:      hdr.Info,
 		remaining: hdr.DataSize,
+		dataStart: dataStart,
 		srcBuf:    d.srcBuf[:0],
 	}
 	if cfg.ignoreLength {
@@ -222,6 +246,12 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 
 // readConverted reads whole source samples and converts them into p.
 func (d *Decoder) readConverted(p []byte) (int, error) {
+	// The data chunk is exhausted. Without this the decoder would read on
+	// past it and convert the pad byte of an odd-length chunk, or a
+	// following chunk's header, into spurious samples.
+	if d.remaining == 0 {
+		return 0, io.EOF
+	}
 	srcWidth := (d.info.SourceBitDepth + 7) / 8
 	dstWidth := (d.convert + 7) / 8
 	if srcWidth <= 0 || dstWidth <= 0 {
@@ -308,7 +338,7 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		return 0, fmt.Errorf("go-wav/pcm: SeekToFrame: negative frame index %d", frame)
 	}
 	seeker, ok := d.src.(io.Seeker)
-	if !ok {
+	if !ok || d.dataStart < 0 {
 		return 0, wav.ErrSeekUnsupported
 	}
 
@@ -316,15 +346,7 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 	if perFrame <= 0 {
 		return 0, fmt.Errorf("go-wav/pcm: %w: block align is not positive", wav.ErrCorruptStream)
 	}
-
-	// The data chunk begins where the parser stopped, which is the source
-	// position less whatever the buffered reader still holds.
-	pos, err := seeker.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return 0, err
-	}
-	consumed := d.consumedAudio()
-	dataStart := pos - int64(d.br.Buffered()) - consumed
+	dataStart := d.dataStart
 
 	offset := frame * perFrame
 	if d.hdr.DataSize >= 0 && offset > d.hdr.DataSize {
@@ -339,12 +361,4 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 	}
 	d.srcBuf = d.srcBuf[:0]
 	return offset / perFrame, nil
-}
-
-// consumedAudio is the number of audio bytes already taken from the data chunk.
-func (d *Decoder) consumedAudio() int64 {
-	if d.hdr.DataSize < 0 || d.remaining < 0 {
-		return 0
-	}
-	return d.hdr.DataSize - d.remaining
 }

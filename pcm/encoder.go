@@ -69,17 +69,21 @@ func (e *Encoder) Reset(w io.Writer, cfg Config) error {
 }
 
 func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
+	// A rejected Reset must not leave the previous stream usable. Pooled
+	// encoders are reused across sinks, so a failure that left the old sink
+	// and configuration in place would let a later Write append to somebody
+	// else's file. Every early return below therefore goes through invalidate.
 	if w == nil {
-		return fmt.Errorf("go-wav/pcm: %s: %w", op, errNilWriter)
+		return e.invalidate(fmt.Errorf("go-wav/pcm: %s: %w", op, errNilWriter))
 	}
 	if err := cfg.validate(op); err != nil {
-		return err
+		return e.invalidate(err)
 	}
 
 	ws, _ := w.(io.WriteSeeker)
 	container, reserve, err := plan(op, cfg, ws != nil)
 	if err != nil {
-		return err
+		return e.invalidate(err)
 	}
 
 	*e = Encoder{
@@ -96,7 +100,7 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
 	if cfg.TotalFrames > 0 {
 		dataSize, err = declaredDataSize(op, cfg)
 		if err != nil {
-			return err
+			return e.invalidate(err)
 		}
 	}
 
@@ -108,7 +112,7 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
 		Frames:      cfg.TotalFrames,
 	})
 	if err != nil {
-		return err
+		return e.invalidate(err)
 	}
 	e.lay = lay
 
@@ -204,7 +208,8 @@ func formatOf(cfg Config) riff.Format {
 // The bytes are passed through unchanged, so they must already be in the format
 // named by the Config: little-endian, unsigned at 8 bits and signed above,
 // or IEEE float where the Config says so. Any chunk size is accepted; a
-// trailing partial sample is carried until the next call or until Close.
+// trailing partial frame is carried until the next call completes it, and
+// Close reports an error if one is still outstanding.
 //
 // It returns len(p) on success. Once the encoder has failed, every later call
 // reports the same error until Reset.
@@ -228,8 +233,8 @@ func (e *Encoder) Write(p []byte) (int, error) {
 		return n, err
 	}
 
-	// Complete the carried sample first.
-	width := int(e.cfg.bytesPerSample())
+	// Complete the carried frame first.
+	width := int(e.cfg.bytesPerFrame())
 	need := width - len(e.carry)
 	if len(p) < need {
 		e.carry = append(e.carry, p...)
@@ -247,9 +252,13 @@ func (e *Encoder) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// writeAligned emits the whole samples of p and carries any remainder.
+// writeAligned emits the whole frames of p and carries any remainder.
+//
+// The unit is the inter-channel frame, not the individual sample: a data chunk
+// that ends part-way through a frame is malformed, so a partial frame must be
+// held back and ultimately rejected rather than written out.
 func (e *Encoder) writeAligned(p []byte) (int, error) {
-	width := int(e.cfg.bytesPerSample())
+	width := int(e.cfg.bytesPerFrame())
 	whole := len(p) - len(p)%width
 	if whole > 0 {
 		if err := e.emit(p[:whole]); err != nil {
@@ -339,8 +348,8 @@ func (e *Encoder) Close() error {
 
 	if len(e.carry) != 0 {
 		return e.fail(fmt.Errorf(
-			"go-wav/pcm: Close: %d trailing bytes are not a whole sample of %d bytes",
-			len(e.carry), e.cfg.bytesPerSample()))
+			"go-wav/pcm: Close: %d trailing bytes are not a whole frame of %d bytes",
+			len(e.carry), e.cfg.bytesPerFrame()))
 	}
 
 	// The data chunk is padded to an even length on disk, though the pad
@@ -396,4 +405,12 @@ func (e *Encoder) fail(err error) error {
 		e.err = err
 	}
 	return e.err
+}
+
+// invalidate discards any previous stream and leaves the encoder unusable,
+// which is how a rejected Reset must end. It keeps the carry buffer's capacity
+// so that pooling still avoids an allocation on the next successful Reset.
+func (e *Encoder) invalidate(err error) error {
+	*e = Encoder{carry: e.carry[:0], closed: true, err: err}
+	return err
 }
