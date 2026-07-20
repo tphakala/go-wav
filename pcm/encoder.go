@@ -65,10 +65,12 @@ func NewEncoder(w io.Writer, cfg Config) (*Encoder, error) {
 //
 // It may be called on a closed encoder.
 func (e *Encoder) Reset(w io.Writer, cfg Config) error {
-	return e.reset("Reset", w, cfg)
+	// A caller-supplied Config declares its length only by setting
+	// TotalFrames; the one-shot path knows the length outright and says so.
+	return e.reset("Reset", w, cfg, cfg.TotalFrames > 0)
 }
 
-func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
+func (e *Encoder) reset(op string, w io.Writer, cfg Config, framesKnown bool) error {
 	// A rejected Reset must not leave the previous stream usable. Pooled
 	// encoders are reused across sinks, so a failure that left the old sink
 	// and configuration in place would let a later Write append to somebody
@@ -81,7 +83,7 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
 	}
 
 	ws, _ := w.(io.WriteSeeker)
-	container, reserve, err := plan(op, cfg, ws != nil)
+	container, reserve, err := plan(op, cfg, ws != nil, framesKnown)
 	if err != nil {
 		return e.invalidate(err)
 	}
@@ -97,7 +99,7 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
 	// A declared frame count means the sizes are known now, so they can be
 	// written correctly even into a sink that will never be seekable.
 	var dataSize int64
-	if cfg.TotalFrames > 0 {
+	if framesKnown {
 		dataSize, err = declaredDataSize(op, cfg)
 		if err != nil {
 			return e.invalidate(err)
@@ -126,10 +128,10 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config) error {
 
 // plan resolves the container to write and whether to reserve ds64 space,
 // rejecting the one combination that cannot produce a correct file.
-func plan(op string, cfg Config, seekable bool) (wav.Container, bool, error) {
+func plan(op string, cfg Config, seekable, framesKnown bool) (wav.Container, bool, error) {
 	switch cfg.RF64 {
 	case RF64Always:
-		if !seekable && cfg.TotalFrames == 0 {
+		if !seekable && !framesKnown {
 			return 0, false, fmt.Errorf(
 				"go-wav/pcm: %s: RF64Always needs either a seekable sink or Config.TotalFrames, "+
 					"because the 64-bit sizes are written before any audio and can never be patched", op)
@@ -140,9 +142,9 @@ func plan(op string, cfg Config, seekable bool) (wav.Container, bool, error) {
 		return wav.ContainerRIFF, false, nil
 
 	case RF64Auto:
-		// A declared frame count settles the question up front: emit RF64
+		// A known frame count settles the question up front: emit RF64
 		// only if the stream genuinely will not fit.
-		if cfg.TotalFrames > 0 {
+		if framesKnown {
 			size, err := declaredDataSize(op, cfg)
 			if err != nil {
 				return 0, false, err

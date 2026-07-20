@@ -48,12 +48,14 @@ func EncodeInterleaved(w io.Writer, cfg Config, pcm []byte) error {
 	e, _ := encoderPool.Get().(*Encoder)
 	defer func() {
 		// Drop the caller's sink before pooling so it is not pinned.
-		if resetErr := e.Reset(io.Discard, minimalConfig()); resetErr == nil {
+		if resetErr := e.reset("EncodeInterleaved", io.Discard, minimalConfig(), false); resetErr == nil {
 			encoderPool.Put(e)
 		}
 	}()
 
-	if err := e.Reset(w, cfg); err != nil {
+	// The payload length is known exactly, including when it is zero, so the
+	// header can be final from the first byte even on a sink that cannot seek.
+	if err := e.reset("EncodeInterleaved", w, cfg, true); err != nil {
 		return err
 	}
 	if _, err := e.Write(pcm); err != nil {

@@ -95,6 +95,11 @@ type Decoder struct {
 	convert int
 	// srcBuf stages source bytes for conversion.
 	srcBuf []byte
+	// outBuf holds converted bytes not yet handed to the caller, and outOff
+	// is how far into it Read has got. Staging the output is what lets a
+	// converting Read accept a buffer smaller than one converted sample.
+	outBuf []byte
+	outOff int
 
 	err error
 }
@@ -170,6 +175,7 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		remaining: hdr.DataSize,
 		dataStart: dataStart,
 		srcBuf:    d.srcBuf[:0],
+		outBuf:    d.outBuf[:0],
 	}
 	if cfg.ignoreLength {
 		d.remaining = -1
@@ -246,6 +252,18 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 
 // readConverted reads whole source samples and converts them into p.
 func (d *Decoder) readConverted(p []byte) (int, error) {
+	// Serve whatever the previous conversion left over. Staging the output
+	// rather than converting straight into p is what lets Read honour any
+	// buffer size, including one smaller than a single converted sample.
+	// Converting in place would have to refuse that, which would make the
+	// converting path violate the io.Reader contract the pass-through path
+	// keeps.
+	if d.outOff < len(d.outBuf) {
+		n := copy(p, d.outBuf[d.outOff:])
+		d.outOff += n
+		return n, nil
+	}
+
 	// The data chunk is exhausted. Without this the decoder would read on
 	// past it and convert the pad byte of an odd-length chunk, or a
 	// following chunk's header, into spurious samples.
@@ -258,17 +276,16 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 		return 0, fmt.Errorf("go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}
 
-	// Convert at most as many samples as fit in p.
-	samples := len(p) / dstWidth
-	if samples == 0 {
-		return 0, io.ErrShortBuffer
-	}
+	// Convert a batch large enough to fill p, and never fewer than one
+	// sample, so that a tiny p still makes progress.
+	samples := max(len(p)/dstWidth, 1)
 	want := samples * srcWidth
 	if d.remaining > 0 && int64(want) > d.remaining {
 		want = int(d.remaining)
 		want -= want % srcWidth
 	}
 	if want == 0 {
+		d.remaining = 0
 		return 0, io.EOF
 	}
 
@@ -291,11 +308,18 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	written, cerr := sample.Convert(p, buf[:n], d.info.SourceFormat, d.info.SourceBitDepth, d.convert)
+	need := sample.ConvertedLen(n, d.info.SourceBitDepth, d.convert)
+	if cap(d.outBuf) < need {
+		d.outBuf = make([]byte, need)
+	}
+	d.outBuf = d.outBuf[:need]
+	written, cerr := sample.Convert(d.outBuf, buf[:n], d.info.SourceFormat, d.info.SourceBitDepth, d.convert)
 	if cerr != nil {
 		return 0, cerr
 	}
-	return written, nil
+	d.outBuf = d.outBuf[:written]
+	d.outOff = copy(p, d.outBuf)
+	return d.outOff, nil
 }
 
 // WriteTo streams the whole of the remaining audio to w. It implements
@@ -360,5 +384,9 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		d.remaining = d.hdr.DataSize - offset
 	}
 	d.srcBuf = d.srcBuf[:0]
+	// Converted bytes staged from before the seek describe the old position,
+	// so they must not be handed out afterwards.
+	d.outBuf = d.outBuf[:0]
+	d.outOff = 0
 	return offset / perFrame, nil
 }
