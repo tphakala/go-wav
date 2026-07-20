@@ -36,6 +36,13 @@ func FuzzDecode(f *testing.F) {
 		for _, opts := range optionSets {
 			d, err := pcm.NewDecoder(bytes.NewReader(data), opts...)
 			if err != nil {
+				// The one-shot path parses the same header, so a stream the
+				// streaming decoder refuses must be refused here too rather
+				// than sliced by bounds nothing validated.
+				if _, got, oneErr := pcm.DecodeInterleaved(data, opts...); oneErr == nil {
+					t.Fatalf("DecodeInterleaved accepted %d bytes of a stream NewDecoder refused with %v",
+						len(got), err)
+				}
 				continue
 			}
 			info := d.Info()
@@ -46,8 +53,36 @@ func FuzzDecode(f *testing.F) {
 			_ = info.BytesPerFrame()
 
 			// Draining must terminate and must not panic.
-			if _, err := io.Copy(io.Discard, d); err != nil {
+			var streamed bytes.Buffer
+			if _, err := io.Copy(&streamed, d); err != nil {
 				continue
+			}
+
+			// Every bound the one-shot path computes comes from the same
+			// attacker-controlled header, and it slices rather than reads, so
+			// a bound the streaming path merely stops early on is one this
+			// path would panic on. Whatever the header claims, the two must
+			// agree byte for byte.
+			oneInfo, one, oneErr := pcm.DecodeInterleaved(data, opts...)
+			if oneErr != nil {
+				t.Fatalf("DecodeInterleaved refused a stream the decoder drained: %v", oneErr)
+			}
+			if oneInfo != info {
+				t.Fatalf("StreamInfo: DecodeInterleaved reports %+v, the decoder reports %+v", oneInfo, info)
+			}
+			// A pass-through result is a window onto the input, so it can be no
+			// longer than the input, and its capacity has to stop exactly at
+			// its length: any spare capacity at all is room for a caller's
+			// append to overwrite whatever their own buffer holds past the
+			// audio. A converted result is a fresh buffer at a different width,
+			// which may legitimately be wider than the stream it came from.
+			if opts == nil && (len(one) > len(data) || cap(one) != len(one)) {
+				t.Fatalf("DecodeInterleaved returned %d bytes with capacity %d from a %d byte stream",
+					len(one), cap(one), len(data))
+			}
+			if !bytes.Equal(one, streamed.Bytes()) {
+				t.Fatalf("audio: DecodeInterleaved returned %d bytes, the decoder returned %d",
+					len(one), streamed.Len())
 			}
 		}
 

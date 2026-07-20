@@ -3,8 +3,9 @@
 // It is the entry point of go-wav, and it presents the same shape as the pcm
 // packages of the sibling libraries go-flac, go-opus and go-aac: a flat Config
 // struct for the encoder, variadic options for the decoder, New plus Reset
-// pairs so both can be pooled, and a one-shot [EncodeInterleaved] for callers
-// who already hold the whole buffer.
+// pairs so both can be pooled, and one-shot [EncodeInterleaved] and
+// [DecodeInterleaved] entry points for callers who already hold the whole
+// buffer.
 //
 //	import wavpcm "github.com/tphakala/go-wav/pcm"
 //
@@ -52,6 +53,14 @@
 //	info := d.Info()       // valid immediately
 //	_, err = io.Copy(w, d)
 //
+// A whole file already in memory needs no reader and no copy:
+//
+//	info, samples, err := wavpcm.DecodeInterleaved(b)
+//
+// The samples it returns alias b rather than being copied out of it, which is
+// the one place in the package where a returned slice is a window onto the
+// caller's own memory. See [DecodeInterleaved] for what that means.
+//
 // Pass-through means the sample encoding varies with the file: notably, 8-bit
 // data is unsigned while every wider integer depth is signed, because that is
 // how WAV stores them. [WithConvertTo] normalises everything to signed integer
@@ -63,7 +72,7 @@
 //
 // # Concurrency
 //
-// An Encoder or Decoder is not safe for concurrent use. [EncodeInterleaved] is,
-// because it draws its encoder from a pool. The package holds no mutable
-// global state.
+// An Encoder or Decoder is not safe for concurrent use. [EncodeInterleaved] and
+// [DecodeInterleaved] are, because they draw from a pool. The package holds no
+// mutable global state.
 package pcm

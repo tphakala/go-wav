@@ -235,3 +235,47 @@ func BenchmarkDecoderResetReuse(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkDecodeInterleaved is the one-shot decode path on a file already in
+// memory, where the audio comes back as a window onto the caller's own buffer.
+// Nothing it does scales with the length of the clip, which is the whole point
+// of it, so an allocation reported here is a per-call cost that pooling was
+// meant to remove.
+func BenchmarkDecodeInterleaved(b *testing.B) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
+	file := benchDecodeFixture(b, cfg, benchClipFrames)
+	wantBytes := benchClipFrames * cfg.Channels * (cfg.BitDepth / 8)
+	b.SetBytes(int64(wantBytes))
+	b.ReportAllocs()
+	for b.Loop() {
+		_, got, err := pcm.DecodeInterleaved(file)
+		if err != nil {
+			b.Fatal(err)
+		}
+		// Guard against a regression that returns nothing and would otherwise
+		// report an absurd throughput while still exiting zero.
+		if len(got) != wantBytes {
+			b.Fatalf("decoded %d bytes, want %d", len(got), wantBytes)
+		}
+	}
+}
+
+// BenchmarkDecodeInterleavedConvert is the same path under a conversion, which
+// cannot alias and so must allocate the converted samples.
+func BenchmarkDecodeInterleavedConvert(b *testing.B) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 1, Format: wav.SampleFormatFloat}
+	file := benchDecodeFixture(b, cfg, benchClipFrames)
+	const convertTo = 16
+	wantBytes := benchClipFrames * cfg.Channels * (convertTo / 8)
+	b.SetBytes(int64(wantBytes))
+	b.ReportAllocs()
+	for b.Loop() {
+		_, got, err := pcm.DecodeInterleaved(file, pcm.WithConvertTo(convertTo))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(got) != wantBytes {
+			b.Fatalf("decoded %d bytes, want %d", len(got), wantBytes)
+		}
+	}
+}

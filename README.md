@@ -86,6 +86,16 @@ info := d.Info()        // valid immediately
 _, err = io.Copy(w, d)  // WriteTo drains the whole stream
 ```
 
+A whole file already in memory needs no reader and no copy:
+
+```go
+info, samples, err := wavpcm.DecodeInterleaved(b)
+```
+
+`samples` aliases the audio inside `b` instead of being copied out of it, so
+writing through either one is visible through the other. Under `WithConvertTo`
+the returned buffer is freshly allocated and aliases nothing.
+
 By default the decoder is a pass-through: `Read` yields the bytes as stored, so
 24-bit audio stays packed in three bytes and nothing is widened behind your
 back. That also means the encoding varies with the file, and in particular that
