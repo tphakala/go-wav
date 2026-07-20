@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/tphakala/go-wav/actions/workflows/ci.yml/badge.svg)](https://github.com/tphakala/go-wav/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tphakala/go-wav.svg)](https://pkg.go.dev/github.com/tphakala/go-wav)
-[![Go Report Card](https://goreportcard.com/badge/github.com/tphakala/go-wav)](https://goreportcard.com/report/github.com/tphakala/go-wav)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/tphakala/go-wav)](https://github.com/tphakala/go-wav/blob/main/go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/github/sponsors/tphakala)](https://github.com/sponsors/tphakala)
