@@ -1682,16 +1682,19 @@ func TestParseHeaderRejections(t *testing.T) {
 			want: wav.ErrCorruptStream,
 		},
 		{
-			name: "alaw_format_tag",
+			// A-law and mu-law are decoded, but only at the one width G.711
+			// defines them for; see TestParseCompandedRejectsOtherDepths for
+			// the full sweep of widths.
+			name: "alaw_at_16_bits",
 			input: cat(fileHeader(idRIFF, 0, idWAVE),
-				chunk(idFmt, fmtPayload16(tagALaw, 1, 8000, 8)),
+				chunk(idFmt, fmtPayload16(tagALaw, 1, 8000, 16)),
 				chunk(idData, make([]byte, 8))),
 			want: wav.ErrUnsupported,
 		},
 		{
-			name: "mulaw_format_tag",
+			name: "mulaw_at_16_bits",
 			input: cat(fileHeader(idRIFF, 0, idWAVE),
-				chunk(idFmt, fmtPayload16(tagMuLaw, 1, 8000, 8)),
+				chunk(idFmt, fmtPayload16(tagMuLaw, 1, 8000, 16)),
 				chunk(idData, make([]byte, 8))),
 			want: wav.ErrUnsupported,
 		},
@@ -1779,6 +1782,25 @@ func TestBuildHeaderRejections(t *testing.T) {
 		{
 			name: "unknown_sample_format",
 			cfg:  HeaderConfig{Format: Format{SampleRate: 48000, Channels: 1, BitDepth: 16, Format: wav.SampleFormat(9)}},
+			want: wav.ErrUnsupported,
+		},
+		{
+			// The two companding laws are sample formats this package
+			// parses, so the refusal to write one has to be deliberate
+			// rather than a side effect of the unknown-format guard. Both
+			// are given the 8 bits validateDepth accepts, so that the
+			// rejection can only be coming from the write-side guard.
+			name: "alaw_output",
+			cfg: HeaderConfig{
+				Format: Format{SampleRate: 8000, Channels: 1, BitDepth: 8, Format: wav.SampleFormatALaw},
+			},
+			want: wav.ErrUnsupported,
+		},
+		{
+			name: "mulaw_output",
+			cfg: HeaderConfig{
+				Format: Format{SampleRate: 8000, Channels: 1, BitDepth: 8, Format: wav.SampleFormatMuLaw},
+			},
 			want: wav.ErrUnsupported,
 		},
 		{

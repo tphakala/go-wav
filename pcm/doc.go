@@ -45,9 +45,9 @@
 // # Decoding
 //
 // The decoder is an [io.Reader] and an [io.WriterTo] over the data chunk. By
-// default it is a pass-through: Read yields the stored bytes verbatim, so
-// 24-bit audio stays packed in three bytes and nothing is widened behind the
-// caller's back.
+// default it is a pass-through for everything but the two companding laws:
+// Read yields the stored bytes verbatim, so 24-bit audio stays packed in three
+// bytes and nothing is widened behind the caller's back.
 //
 //	d, err := wavpcm.NewDecoder(r)
 //	info := d.Info()       // valid immediately
@@ -57,14 +57,24 @@
 //
 //	info, samples, err := wavpcm.DecodeInterleaved(b)
 //
-// The samples it returns alias b rather than being copied out of it, which is
-// the one place in the package where a returned slice is a window onto the
-// caller's own memory. See [DecodeInterleaved] for what that means.
+// Whenever the bytes handed back are the bytes as stored, the samples it
+// returns alias b rather than being copied out of it, which is the one place in
+// the package where a returned slice is a window onto the caller's own memory.
+// A stream whose samples are rewritten on the way out comes back in a buffer of
+// its own instead, and a companded source is rewritten with or without a
+// conversion option, so the options alone do not say which case applies. See
+// [DecodeInterleaved] for what that means.
 //
 // Pass-through means the sample encoding varies with the file: notably, 8-bit
 // data is unsigned while every wider integer depth is signed, because that is
 // how WAV stores them. [WithConvertTo] normalises everything to signed integer
 // PCM of a chosen width, converting float and 8-bit sources on the way.
+//
+// A-law and mu-law are the exception to the pass-through, and are expanded to
+// linear 16-bit PCM with or without that option, because a companded byte is
+// not a sample on any linear scale and a caller handed one raw would get noise.
+// Neither law is written; a Config asking for one is rejected with
+// [github.com/tphakala/go-wav.ErrUnsupported].
 //
 // [Decoder.Info] always describes what Read yields rather than what is on disk,
 // so it never disagrees with the bytes. The stored encoding remains available

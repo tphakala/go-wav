@@ -3,6 +3,7 @@ package pcm_test
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -318,6 +319,131 @@ func TestSoxReadsOurOutput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// compandedCrossCases names the two G.711 laws by the codec name ffmpeg gives
+// them and the encoding name sox gives them, which differ.
+var compandedCrossCases = []struct {
+	name       string
+	tag        uint16
+	format     wav.SampleFormat
+	ffmpegCode string
+	soxEncode  string
+}{
+	{"alaw", tagALaw, wav.SampleFormatALaw, "pcm_alaw", "a-law"},
+	{"mulaw", tagMuLaw, wav.SampleFormatMuLaw, "pcm_mulaw", "u-law"},
+}
+
+// TestDecodeFFmpegCompanded is the strongest evidence available that the two
+// lookup tables are right.
+//
+// The payload is every one of the 256 codes, so the comparison covers the whole
+// domain of each law rather than whichever codes a sine wave happens to
+// produce: a single wrong table entry is a silent defect that only shows up on
+// the codes that hit it. ffmpeg decoding the same file to 16-bit PCM is the
+// reference, and the two must agree byte for byte.
+func TestDecodeFFmpegCompanded(t *testing.T) {
+	ffmpeg := lookPath(t, "ffmpeg")
+	dir := t.TempDir()
+
+	for _, tc := range compandedCrossCases {
+		t.Run(tc.name, func(t *testing.T) {
+			codes := allCodes()
+			rawPath := filepath.Join(dir, tc.name+".raw")
+			if err := os.WriteFile(rawPath, codes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The raw demuxer name is the codec name without its pcm_ prefix,
+			// which is also how the existing cross-validation names formats.
+			raw := strings.TrimPrefix(tc.ffmpegCode, "pcm_")
+			path := filepath.Join(dir, tc.name+".wav")
+			run(t, ffmpeg, "-v", "error", "-y",
+				"-f", raw, "-ar", "8000", "-ac", "1", "-i", rawPath,
+				"-c:a", tc.ffmpegCode, path)
+
+			want := run(t, ffmpeg, "-v", "error", "-i", path, "-f", "s16le", "-c:a", "pcm_s16le", "-")
+
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+
+			d, err := pcm.NewDecoder(f)
+			if err != nil {
+				t.Fatalf("NewDecoder on ffmpeg %s output: %v", tc.name, err)
+			}
+			info := d.Info()
+			if info.SourceFormat != tc.format {
+				t.Errorf("SourceFormat: got %v want %v", info.SourceFormat, tc.format)
+			}
+			if info.SourceBitDepth != 8 || info.BitDepth != 16 {
+				t.Errorf("widths: got source %d, output %d; want 8 and 16",
+					info.SourceBitDepth, info.BitDepth)
+			}
+			if info.TotalFrames != uint64(len(codes)) {
+				t.Errorf("frames: got %d want %d", info.TotalFrames, len(codes))
+			}
+
+			got, err := io.ReadAll(d)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("%s expansion differs from ffmpeg:\n%s", tc.name, diffSamples(got, want))
+			}
+		})
+	}
+}
+
+// TestDecodeSoxCompanded repeats the exhaustive comparison against sox, because
+// agreeing with one implementation is weaker evidence than agreeing with two,
+// and because sox and ffmpeg carry independent G.711 tables.
+func TestDecodeSoxCompanded(t *testing.T) {
+	sox := lookPath(t, "sox")
+	dir := t.TempDir()
+
+	for _, tc := range compandedCrossCases {
+		t.Run(tc.name, func(t *testing.T) {
+			codes := allCodes()
+			path := filepath.Join(dir, tc.name+".wav")
+			// A file this package built, so sox is reading the same fixture
+			// the decoder tests use rather than one sox wrote for itself.
+			if err := os.WriteFile(path, compandedFile(t, tc.tag, 1, 8000, codes), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			want := run(t, sox, path, "-t", "raw", "-e", "signed-integer", "-b", "16", "-L", "-")
+
+			d, err := pcm.NewDecoder(bytes.NewReader(compandedFile(t, tc.tag, 1, 8000, codes)))
+			if err != nil {
+				t.Fatalf("NewDecoder: %v", err)
+			}
+			got, err := io.ReadAll(d)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("%s expansion differs from sox:\n%s", tc.name, diffSamples(got, want))
+			}
+		})
+	}
+}
+
+// diffSamples describes the first disagreement between two 16-bit payloads,
+// which for a table defect names the offending code directly.
+func diffSamples(got, want []byte) string {
+	if len(got) != len(want) {
+		return fmt.Sprintf("lengths differ: got %d bytes, want %d", len(got), len(want))
+	}
+	for i := 0; i+1 < len(got); i += 2 {
+		g := int16(binary.LittleEndian.Uint16(got[i:]))  //nolint:gosec // G115: reading a signed sample.
+		w := int16(binary.LittleEndian.Uint16(want[i:])) //nolint:gosec // G115: as above.
+		if g != w {
+			return fmt.Sprintf("sample %d (code 0x%02X): got %d, want %d", i/2, i/2, g, w)
+		}
+	}
+	return "payloads are equal"
 }
 
 // floatPattern builds a deterministic buffer of finite float samples inside

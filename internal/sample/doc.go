@@ -19,6 +19,12 @@
 // encoding one adds it back. Every value in flight through this package is a
 // signed sample; the bias exists only on disk.
 //
+// A-law and mu-law store one byte per sample too, but that byte is not a sample
+// on any linear scale: it is a sign, a segment acting as an exponent and a
+// mantissa, which G.711 expands to 13 and 14 bits of resolution respectively.
+// Each law is a function of 256 inputs, so each becomes a lookup table, built
+// at initialisation from the law rather than transcribed. See companded.go.
+//
 // # Conversion policy
 //
 // [Convert] always produces signed integer PCM, because that is the only sample
@@ -36,6 +42,13 @@
 // routinely carry samples past full scale, so the clamp is mandatory rather
 // than defensive. NaN maps to 0 and the infinities map to the corresponding
 // limit, so a broken sample can never propagate a NaN into integer output.
+//
+// Companded to integer conversion expands the code to its linear 16-bit value,
+// which is the width the laws are defined against, and then requantises by the
+// same shift rule any other integer pair uses. Converting straight to 24 bits
+// therefore gives exactly what converting to 16 and then to 24 gives; the one
+// pass is a saving, not a different rule. Nothing converts the other way,
+// because this library companded nothing and writes neither law.
 //
 // Integer to float conversion is deliberately absent: this library never emits
 // float samples to a caller.

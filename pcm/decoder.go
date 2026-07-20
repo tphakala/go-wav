@@ -61,11 +61,15 @@ type Option func(*config)
 // little-endian integer PCM of the given bit depth, which must be 8, 16, 24
 // or 32.
 //
-// Without it the decoder is a pass-through and Read yields the data chunk
-// verbatim, which means the sample encoding varies with the file. Converting
-// normalises the two traps in that: float sources become integers, scaled by
-// full scale and clamped, and 8-bit sources become signed rather than the
-// unsigned form WAV stores them in.
+// Without it the decoder is a pass-through for every source but the two named
+// below, and Read yields the data chunk verbatim, which means the sample
+// encoding varies with the file. Converting normalises the two traps in that:
+// float sources become integers, scaled by full scale and clamped, and 8-bit
+// sources become signed rather than the unsigned form WAV stores them in.
+//
+// An A-law or mu-law source is the one case that is converted with or without
+// this option, to linear 16-bit by default. Passing the option over such a
+// source chooses the width of an expansion that was happening anyway.
 //
 // [Decoder.Info] reports the converted width, since it describes what Read
 // yields; the stored width remains available as SourceBitDepth.
@@ -233,11 +237,27 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		d.info.TotalFrames = 0
 	}
 
+	// A companded source is expanded whether or not the caller asked for a
+	// conversion, because a G.711 code is not a sample on any linear scale.
+	// Handing the stored bytes back would be handing back a different codec's
+	// payload: unlike the 8-bit unsigned case, where the bytes are samples in
+	// a convention the caller can correct for, there is no scale on which a
+	// companded byte is the sample it stands for. Sixteen bits is the width
+	// the laws are defined against, so it is what an unasked-for expansion
+	// lands on; a caller wanting another width asks for it as usual.
+	convertTo := cfg.convertTo
+	if convertTo == 0 && d.info.SourceFormat.Companded() {
+		convertTo = 16
+	}
+
 	// Info describes what Read yields, so a conversion changes it.
-	if cfg.convertTo != 0 {
-		d.convert = cfg.convertTo
-		d.info.BitDepth = cfg.convertTo
+	if convertTo != 0 {
+		d.convert = convertTo
+		d.info.BitDepth = convertTo
 		d.info.Format = wav.SampleFormatPCM
+		// The declared meaningful width described the stored samples, so it
+		// does not survive a change of width. It is absent for a companded
+		// source anyway, since nothing declares one.
 		d.info.ValidBits = 0
 	}
 	return nil
@@ -257,19 +277,27 @@ func (d *Decoder) lengthKnown() bool {
 // Info describes the stream.
 //
 // It reports what [Decoder.Read] yields, not what is stored: under
-// [WithConvertTo] the BitDepth and Format fields are the converted ones, and
-// the stored encoding is in SourceBitDepth and SourceFormat. Info and Read
-// never disagree.
+// [WithConvertTo], and over a companded source whether or not the option was
+// given, the BitDepth and Format fields are the converted ones and the stored
+// encoding is in SourceBitDepth and SourceFormat. Info and Read never
+// disagree.
 func (d *Decoder) Info() wav.StreamInfo { return d.info }
 
 // Read fills p with interleaved samples.
 //
-// By default the bytes are exactly those stored in the file. That means the
-// encoding varies with the source, and in particular that 8-bit data is
-// UNSIGNED with a midpoint of 128 while every wider integer depth is signed
-// two's complement, because that is how WAV stores them. Code that assumes a
-// single signed convention throughout must either check
+// By default the bytes are those stored in the file, with the single exception
+// below. That means the encoding varies with the source, and in particular that
+// 8-bit data is UNSIGNED with a midpoint of 128 while every wider integer depth
+// is signed two's complement, because that is how WAV stores them. Code that
+// assumes a single signed convention throughout must either check
 // [wav.StreamInfo.Format] and BitDepth or ask for [WithConvertTo].
+//
+// The exception is an A-law or mu-law source, which is expanded to linear
+// 16-bit PCM whether or not a conversion was asked for. Those bytes are not
+// samples in a convention a caller could correct for, the way an unsigned
+// 8-bit byte is; they are a different codec's payload, and handing them back
+// would give noise to anyone who did not decode them. [Decoder.Info] reports
+// the expansion, so it still describes what this returns.
 //
 // Under WithConvertTo the bytes are signed little-endian integers of the
 // requested width.

@@ -31,6 +31,16 @@ var (
 		0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
 		0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
 	}
+	// guidALaw is KSDATAFORMAT_SUBTYPE_ALAW, 00000006-0000-0010-8000-00aa00389b71.
+	guidALaw = [16]byte{
+		0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+		0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+	}
+	// guidMuLaw is KSDATAFORMAT_SUBTYPE_MULAW, 00000007-0000-0010-8000-00aa00389b71.
+	guidMuLaw = [16]byte{
+		0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+		0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+	}
 )
 
 // Speaker positions of dwChannelMask, in the order interleaved channels must
@@ -126,9 +136,14 @@ func parseFmt(b []byte) (Format, error) {
 			tag = tagPCM
 		case guidFloat:
 			tag = tagIEEEFloat
+		case guidALaw:
+			tag = tagALaw
+		case guidMuLaw:
+			tag = tagMuLaw
 		default:
 			return Format{}, fmt.Errorf(
-				"go-wav/internal/riff: %w: SubFormat GUID %x is not PCM or IEEE float", wav.ErrUnsupported, guid)
+				"go-wav/internal/riff: %w: SubFormat GUID %x is not PCM, IEEE float, A-law or mu-law",
+				wav.ErrUnsupported, guid)
 		}
 	}
 
@@ -138,9 +153,9 @@ func parseFmt(b []byte) (Format, error) {
 	case tagIEEEFloat:
 		f.Format = wav.SampleFormatFloat
 	case tagALaw:
-		return Format{}, fmt.Errorf("go-wav/internal/riff: %w: A-law", wav.ErrUnsupported)
+		f.Format = wav.SampleFormatALaw
 	case tagMuLaw:
-		return Format{}, fmt.Errorf("go-wav/internal/riff: %w: mu-law", wav.ErrUnsupported)
+		f.Format = wav.SampleFormatMuLaw
 	default:
 		return Format{}, fmt.Errorf("go-wav/internal/riff: %w: format tag 0x%04X", wav.ErrUnsupported, tag)
 	}
@@ -149,11 +164,13 @@ func parseFmt(b []byte) (Format, error) {
 		return Format{}, err
 	}
 
-	// For an uncompressed encoding the frame size follows from the channel
+	// For a fixed-width encoding the frame size follows from the channel
 	// count and the sample width, so a declared nBlockAlign that disagrees
 	// is a writer bug rather than information. Trusting it would corrupt
 	// every frame count derived from the data chunk size, so the derived
-	// value always wins.
+	// value always wins. A-law and mu-law are companded but still fixed
+	// width, one byte per sample, so the same derivation holds for them and
+	// gives the nBlockAlign real encoders write.
 	f.BlockAlign = (f.BitDepth + 7) / 8 * f.Channels
 	// ValidBits wider than the container is nonsense; treat it as absent
 	// rather than propagating it.
@@ -180,6 +197,15 @@ func validateDepth(format wav.SampleFormat, bits int) error {
 		}
 		return fmt.Errorf("go-wav/internal/riff: %w: float bit depth %d (want 32 or 64)",
 			wav.ErrUnsupported, bits)
+	case wav.SampleFormatALaw, wav.SampleFormatMuLaw:
+		// G.711 defines one code width. A fmt chunk naming a companding law
+		// at any other depth describes nothing that exists, and reading it
+		// as though the depth field were the mistake would decode noise.
+		if bits == 8 {
+			return nil
+		}
+		return fmt.Errorf("go-wav/internal/riff: %w: %s bit depth %d (want 8)",
+			wav.ErrUnsupported, format, bits)
 	default:
 		return fmt.Errorf("go-wav/internal/riff: %w: sample format %d", wav.ErrUnsupported, format)
 	}

@@ -35,6 +35,15 @@ func header(tb testing.TB, magic, form string) []byte {
 // the two default arms are pinned to one spelling.
 const unknownName = "unknown"
 
+// The two rows every enum table below ends with. Naming them keeps the tripwire
+// row recognisable as the same construct wherever it appears: the value one
+// past the last declared member, which becomes a real member the moment one is
+// added and fails the row that still expects it to be unknown.
+const (
+	tripwireName   = "one past the last declared member"
+	outOfRangeName = "out of range value"
+)
+
 // TestSniff pins Sniff's positive and negative cases: the three recognised
 // containers, and the ways a header can fail to be one of them. Sniff exists
 // so that callers do not have to hand-roll a magic check that forgets RF64
@@ -337,8 +346,8 @@ func TestContainerString(t *testing.T) {
 		{"RIFF", wav.ContainerRIFF, "RIFF"},
 		{"RF64", wav.ContainerRF64, "RF64"},
 		{"BW64", wav.ContainerBW64, "BW64"},
-		{"one past the last declared member", wav.ContainerBW64 + 1, unknownName},
-		{"out of range value", wav.Container(99), unknownName},
+		{tripwireName, wav.ContainerBW64 + 1, unknownName},
+		{outOfRangeName, wav.Container(99), unknownName},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -376,9 +385,13 @@ func TestContainerSized64(t *testing.T) {
 
 // TestSampleFormatString pins the short name each sample format reports,
 // including the default arm reached by a value outside the declared enum. The
-// value one past the last declared member is a tripwire: adding a third sample
-// format makes SampleFormatFloat+1 a real member and fails this row until the
-// new format has both a name here and an arm in String.
+// value one past the last declared member is a tripwire: adding a further
+// sample format makes SampleFormatMuLaw+1 a real member and fails this row
+// until the new format has both a name here and an arm in String.
+//
+// The tripwire is the only guard, because .golangci.yaml sets exhaustive's
+// default-signifies-exhaustive, so a switch with a default arm is not reported
+// when a member is added.
 func TestSampleFormatString(t *testing.T) {
 	tests := []struct {
 		name string
@@ -387,13 +400,40 @@ func TestSampleFormatString(t *testing.T) {
 	}{
 		{"PCM", wav.SampleFormatPCM, "pcm"},
 		{"Float", wav.SampleFormatFloat, "float"},
-		{"one past the last declared member", wav.SampleFormatFloat + 1, unknownName},
-		{"out of range value", wav.SampleFormat(99), unknownName},
+		{"ALaw", wav.SampleFormatALaw, "a-law"},
+		{"MuLaw", wav.SampleFormatMuLaw, "mu-law"},
+		{tripwireName, wav.SampleFormatMuLaw + 1, unknownName},
+		{outOfRangeName, wav.SampleFormat(99), unknownName},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.f.String(); got != tt.want {
 				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSampleFormatCompanded pins which formats report themselves as companded.
+// Like the String table above, the row one past the last declared member is a
+// tripwire against a new format being added without a decision here.
+func TestSampleFormatCompanded(t *testing.T) {
+	tests := []struct {
+		name string
+		f    wav.SampleFormat
+		want bool
+	}{
+		{"PCM", wav.SampleFormatPCM, false},
+		{"Float", wav.SampleFormatFloat, false},
+		{"ALaw", wav.SampleFormatALaw, true},
+		{"MuLaw", wav.SampleFormatMuLaw, true},
+		{tripwireName, wav.SampleFormatMuLaw + 1, false},
+		{outOfRangeName, wav.SampleFormat(99), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.f.Companded(); got != tt.want {
+				t.Errorf("Companded() = %v, want %v", got, tt.want)
 			}
 		})
 	}
