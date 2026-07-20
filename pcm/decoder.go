@@ -22,11 +22,18 @@ var errNilReader = errors.New("go-wav/pcm: nil reader")
 
 // readBufferSize is the buffered reader's window.
 //
-// It only has to cover header parsing: the parser's largest inspection is a
-// 40-byte fmt chunk and its lookahead is Peek(4), and bufio reads straight into
-// the caller's slice once a request is at least this large, so a bigger window
-// buys nothing for streaming. Since a Decoder allocates one per stream, keeping
-// it small is what makes opening a file to read only its Info cheap.
+// It is sized for header parsing, whose only window-sensitive operation is the
+// Peek(4) that resolves a missing pad byte; chunk payloads are read into their
+// own buffer and so are independent of it. A Decoder allocates one window per
+// stream, and keeping it small is what makes opening a file just to read its
+// Info cheap.
+//
+// The trade this makes: a caller reading in blocks smaller than the window now
+// refills more often than it did at 64 KiB. A caller reading in larger blocks
+// is unaffected, because bufio hands a request at least as large as its buffer
+// straight through once the buffer has drained. That is an implementation
+// detail rather than a documented guarantee, so it is a reason to prefer the
+// smaller window, not a promise the package makes.
 const readBufferSize = 4 << 10
 
 // writeToBufferSize is the staging buffer WriteTo streams through. It is

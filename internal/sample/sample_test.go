@@ -76,7 +76,7 @@ func decodeAll(t *testing.T, b []byte, bits int) []int64 {
 	}
 	out := make([]int64, 0, len(b)/w)
 	for i := 0; i+w <= len(b); i += w {
-		out = append(out, decodeInt(b[i:], bits))
+		out = append(out, decodeIntRef(b[i:], bits))
 	}
 	return out
 }
@@ -330,13 +330,13 @@ func TestPack24Bit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := decodeInt(tt.bytes, 24); got != tt.want {
-				t.Fatalf("decodeInt(% x, 24) = %d, want %d", tt.bytes, got, tt.want)
+			if got := decodeIntRef(tt.bytes, 24); got != tt.want {
+				t.Fatalf("decodeIntRef(% x, 24) = %d, want %d", tt.bytes, got, tt.want)
 			}
 			var packed [3]byte
-			encodeInt(packed[:], tt.want, 24)
+			encodeIntRef(packed[:], tt.want, 24)
 			if !bytes.Equal(packed[:], tt.bytes) {
-				t.Fatalf("encodeInt(%d, 24) = % x, want % x", tt.want, packed[:], tt.bytes)
+				t.Fatalf("encodeIntRef(%d, 24) = % x, want % x", tt.want, packed[:], tt.bytes)
 			}
 		})
 	}
@@ -348,8 +348,8 @@ func TestPack24BitRoundTripsEveryDecade(t *testing.T) {
 	t.Parallel()
 	var packed [3]byte
 	for v := int64(-8388608); v <= 8388607; v += 4093 {
-		encodeInt(packed[:], v, 24)
-		if got := decodeInt(packed[:], 24); got != v {
+		encodeIntRef(packed[:], v, 24)
+		if got := decodeIntRef(packed[:], 24); got != v {
 			t.Fatalf("24-bit round trip of %d produced %d (bytes % x)", v, got, packed[:])
 		}
 	}

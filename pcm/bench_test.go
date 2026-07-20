@@ -2,6 +2,7 @@ package pcm_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 	pcm "github.com/tphakala/go-wav/pcm"
 )
 
-// benchClip is three seconds of 48 kHz mono 16-bit, which is the shape
+// benchClipFrames is three seconds of 48 kHz mono, which is the shape
 // BirdNET-Go writes for every detection.
 const benchClipFrames = 48000 * 3
 
@@ -28,7 +29,6 @@ func BenchmarkEncodeInterleavedClip(b *testing.B) {
 	src := benchPayload(benchClipFrames, 1, 16)
 	b.SetBytes(int64(len(src)))
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if err := pcm.EncodeInterleaved(io.Discard, cfg, src); err != nil {
 			b.Fatal(err)
@@ -47,7 +47,6 @@ func BenchmarkEncoderStreamWrite(b *testing.B) {
 	}
 	b.SetBytes(int64(len(chunk)))
 	b.ReportAllocs()
-	b.ResetTimer()
 	var written int64
 	for b.Loop() {
 		if _, err := e.Write(chunk); err != nil {
@@ -75,7 +74,6 @@ func BenchmarkEncoderStreamWriteUnaligned(b *testing.B) {
 	}
 	b.SetBytes(int64(len(chunk)))
 	b.ReportAllocs()
-	b.ResetTimer()
 	var written int64
 	for b.Loop() {
 		if _, err := e.Write(chunk); err != nil {
@@ -95,7 +93,6 @@ func BenchmarkEncoderStreamWriteUnaligned(b *testing.B) {
 func BenchmarkNewEncoder(b *testing.B) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if _, err := pcm.NewEncoder(io.Discard, cfg); err != nil {
 			b.Fatal(err)
@@ -108,7 +105,6 @@ func BenchmarkNewEncoder(b *testing.B) {
 func BenchmarkNewEncoderDeclared(b *testing.B) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1, TotalFrames: benchClipFrames}
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if _, err := pcm.NewEncoder(io.Discard, cfg); err != nil {
 			b.Fatal(err)
@@ -132,19 +128,29 @@ func BenchmarkDecodePassThrough(b *testing.B) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
 	file := benchDecodeFixture(b, cfg, benchClipFrames)
 	sink := make([]byte, 64<<10)
-	b.SetBytes(int64(len(file)))
+	wantBytes := int64(benchClipFrames * cfg.Channels * (cfg.BitDepth / 8))
+	b.SetBytes(wantBytes)
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		d, err := pcm.NewDecoder(bytes.NewReader(file))
 		if err != nil {
 			b.Fatal(err)
 		}
+		var got int64
 		for {
-			_, rerr := d.Read(sink)
-			if rerr != nil {
+			n, rerr := d.Read(sink)
+			got += int64(n)
+			if errors.Is(rerr, io.EOF) {
 				break
 			}
+			if rerr != nil {
+				b.Fatalf("read: %v", rerr)
+			}
+		}
+		// Guard against a regression that fails on the first Read and would
+		// otherwise report an absurd throughput while still exiting zero.
+		if got != wantBytes {
+			b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
 		}
 	}
 }
@@ -154,19 +160,31 @@ func BenchmarkDecodeConvert(b *testing.B) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 1, Format: wav.SampleFormatFloat}
 	file := benchDecodeFixture(b, cfg, benchClipFrames)
 	sink := make([]byte, 64<<10)
-	b.SetBytes(int64(len(file)))
+	// The decoder converts to 16 bit, so the output is narrower than the source.
+	const convertTo = 16
+	wantBytes := int64(benchClipFrames * cfg.Channels * (convertTo / 8))
+	b.SetBytes(wantBytes)
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
-		d, err := pcm.NewDecoder(bytes.NewReader(file), pcm.WithConvertTo(16))
+		d, err := pcm.NewDecoder(bytes.NewReader(file), pcm.WithConvertTo(convertTo))
 		if err != nil {
 			b.Fatal(err)
 		}
+		var got int64
 		for {
-			_, rerr := d.Read(sink)
-			if rerr != nil {
+			n, rerr := d.Read(sink)
+			got += int64(n)
+			if errors.Is(rerr, io.EOF) {
 				break
 			}
+			if rerr != nil {
+				b.Fatalf("read: %v", rerr)
+			}
+		}
+		// Guard against a regression that fails on the first Read and would
+		// otherwise report an absurd throughput while still exiting zero.
+		if got != wantBytes {
+			b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
 		}
 	}
 }
@@ -177,7 +195,6 @@ func BenchmarkParseHeader(b *testing.B) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}
 	file := benchDecodeFixture(b, cfg, 16)
 	b.ReportAllocs()
-	b.ResetTimer()
 	for b.Loop() {
 		if _, err := pcm.NewDecoder(bytes.NewReader(file)); err != nil {
 			b.Fatal(err)

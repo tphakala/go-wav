@@ -89,7 +89,9 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 		FactOffset: -1,
 	}
 
-	buf := make([]byte, 0, 128)
+	// Exactly the length HeaderLen predicts, so the buffer never grows and
+	// every BuildHeader call exercises the arithmetic HeaderLen states.
+	buf := make([]byte, 0, HeaderLen(cfg))
 
 	// File header. The size is filled in below once the rest is measured.
 	buf = append(buf, cfg.Container.String()...)
@@ -152,7 +154,13 @@ func appendChunkHeader(dst []byte, id string, size uint32) []byte {
 //
 // The ds64 riffSize is defined identically, so both containers share this.
 func riffSizeFor(lay *Layout, dataSize int64) int64 {
-	return lay.DataOffset + padded(dataSize) - 8
+	return riffSizeForLen(lay.DataOffset, dataSize)
+}
+
+// riffSizeForLen is riffSizeFor expressed against a header length, so callers
+// that know only the length share the one statement of the formula.
+func riffSizeForLen(headerLen, dataSize int64) int64 {
+	return headerLen + padded(dataSize) - 8
 }
 
 // writeSizesInto stamps the size fields into an in-memory header.
@@ -210,7 +218,7 @@ func FitsRIFF(lay *Layout, dataSize int64) bool {
 // fitsRIFF is the size test expressed against a header length, so a caller who
 // only needs the answer does not have to build a header to get it.
 func fitsRIFF(headerLen, dataSize int64) bool {
-	return dataSize >= 0 && dataSize <= maxUint32 && headerLen+padded(dataSize)-8 <= maxUint32
+	return dataSize >= 0 && dataSize <= maxUint32 && riffSizeForLen(headerLen, dataSize) <= maxUint32
 }
 
 // HeaderLen returns the number of bytes [BuildHeader] would emit for cfg,
@@ -219,6 +227,10 @@ func fitsRIFF(headerLen, dataSize int64) bool {
 // It exists so that deciding whether a stream needs RF64 costs arithmetic
 // instead of a throwaway header and its allocations, which matters because that
 // decision is made once per stream and a caller may write many short streams.
+//
+// It assumes a cfg that BuildHeader would accept and validates nothing itself,
+// and it reads only the fields the layout depends on: DataSize and Frames do
+// not affect the header's length.
 //
 //nolint:gocritic // HeaderConfig by value matches BuildHeader and the by-value public Config.
 func HeaderLen(cfg HeaderConfig) int64 {

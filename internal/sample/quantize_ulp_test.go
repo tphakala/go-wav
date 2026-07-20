@@ -93,7 +93,7 @@ func TestConvertFloatSubHalfBand(t *testing.T) {
 		}
 		width := bits / 8
 		for i := range 2 {
-			v := decodeInt(dst[i*width:], bits)
+			v := decodeIntRef(dst[i*width:], bits)
 			if v != 0 {
 				t.Errorf("bits=%d sample %d: got %d, want 0 (a value inside half an LSB must quantise to zero)",
 					bits, i, v)
@@ -107,4 +107,63 @@ func putF64(b []byte, v float64) {
 	for i := range 8 {
 		b[i] = byte(u >> (8 * i))
 	}
+}
+
+// TestConvertFloatCrossesBlockBoundary drives the float path past the internal
+// block size, which nothing else in the suite does.
+//
+// convertFloatToInt stages through a fixed 1024-sample buffer. A regression in
+// its block arithmetic, processing only the first block or dropping a trailing
+// partial one, is invisible to any input that fits in a single block, and every
+// other float test in this package is smaller than that. The sizes below are
+// chosen to give two full blocks plus a partial tail, and an exact multiple.
+func TestConvertFloatCrossesBlockBoundary(t *testing.T) {
+	for _, samples := range []int{blockSamples - 1, blockSamples, blockSamples + 1, 2*blockSamples + 7, 3 * blockSamples} {
+		for _, srcBits := range []int{32, 64} {
+			for _, dstBits := range []int{16, 24, 32} {
+				srcWidth := srcBits / 8
+				src := make([]byte, samples*srcWidth)
+				// A deterministic ramp inside full scale, so every sample
+				// reaches the rounding path rather than the clamp.
+				for i := range samples {
+					v := float64(i%2001-1000) / 1001.0
+					if srcBits == 32 {
+						putU32LE(src[i*4:], math.Float32bits(float32(v)))
+					} else {
+						putF64(src[i*8:], v)
+					}
+				}
+
+				dst := make([]byte, ConvertedLen(len(src), srcBits, dstBits))
+				n, err := Convert(dst, src, wav.SampleFormatFloat, srcBits, dstBits)
+				if err != nil {
+					t.Fatalf("f%d->s%d n=%d: %v", srcBits, dstBits, samples, err)
+				}
+				if want := samples * (dstBits / 8); n != want {
+					t.Fatalf("f%d->s%d n=%d: wrote %d bytes, want %d", srcBits, dstBits, samples, n, want)
+				}
+
+				// Every sample must match a direct scalar quantisation, so a
+				// block that was skipped or truncated shows up as a zero run.
+				fullScale := float64(int64(1) << uint(dstBits-1))
+				posLimit, negLimit := fullScale-1, -fullScale
+				width := dstBits / 8
+				for i := range samples {
+					v := float64(i%2001-1000) / 1001.0
+					if srcBits == 32 {
+						v = float64(float32(v))
+					}
+					want := quantize(v, fullScale, posLimit, negLimit)
+					if got := decodeIntRef(dst[i*width:], dstBits); got != want {
+						t.Fatalf("f%d->s%d n=%d: sample %d = %d, want %d",
+							srcBits, dstBits, samples, i, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func putU32LE(b []byte, v uint32) {
+	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
 }

@@ -90,8 +90,12 @@ func Convert(dst, src []byte, srcFormat wav.SampleFormat, srcBits, dstBits int) 
 	// dst alone and keeps the indexed accesses provably in range.
 	srcWidth := bytesPerSample(srcBits)
 	dstWidth := bytesPerSample(dstBits)
-	src = src[:(need/dstWidth)*srcWidth]
-	dst = dst[:need]
+	// Capped as well as sliced: the block helpers reslice these to the extent
+	// they expect, and a slice expression is bounded by capacity, so without
+	// the cap a mistake there would silently read or write past the length
+	// these lines establish instead of panicking.
+	src = src[: (need/dstWidth)*srcWidth : (need/dstWidth)*srcWidth]
+	dst = dst[:need:need]
 
 	if srcFormat == wav.SampleFormatPCM {
 		if srcBits == dstBits {
@@ -120,8 +124,9 @@ func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 	// throughput; the alternative, a specialised loop for all sixteen width
 	// pairs, is the same idea written four times over.
 	//
-	// int32 holds every value this can produce: the widest shift is 8 bits to
-	// 32, and 127<<24 still fits.
+	// int32 holds every value this can produce. The widest shift is 8 bits to
+	// 32, where -128<<24 lands exactly on MinInt32: that is the binding case,
+	// with no headroom, and it fits.
 	var tmp [blockSamples]int32
 
 	total := len(dst) / dstWidth
@@ -143,12 +148,18 @@ func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 	}
 }
 
-// blockSamples is how many samples convertIntToInt stages at a time. At four
-// bytes each the buffer is small enough to stay in L1 and to sit on the stack
-// without growing it meaningfully.
-const blockSamples = 1024
+// blockSamples is how many samples the conversion loops stage at a time.
+//
+// The size is bounded by the stack, not the cache. A goroutine starts with a
+// 2 KiB stack, so a block of 1024 would make these frames about 4.2 KiB and
+// force a stack growth on the first call from every fresh goroutine. At 256 the
+// frame is around 1.1 KiB and fits, and the throughput is the same: the win
+// comes from switching on the sample width once per block instead of once per
+// sample, and 256 amortises that just as well as 1024.
+const blockSamples = 256
 
-// decodeBlock reads n samples of the given width into out as signed values.
+// decodeBlock reads len(out) samples of the given width into out as signed
+// values.
 // The width is switched on once here rather than once per sample.
 func decodeBlock(out []int32, src []byte, bits int) {
 	switch bits {
@@ -253,11 +264,17 @@ func convertFloatToInt(dst, src []byte, srcBits, dstBits int) {
 	}
 }
 
-// quantize scales one float sample to an integer sample. NaN becomes 0 so a
-// broken sample cannot poison the output; the clamp then absorbs both
-// infinities and every finite value past full scale, which real-world float WAV
-// files carry routinely. Only in-range values reach math.Round, which rounds
-// half away from zero.
+// quantize scales one float sample to an integer sample.
+//
+// The clamp absorbs both infinities and every finite value past full scale,
+// which real-world float WAV files carry routinely. NaN becomes 0 so a broken
+// sample cannot poison the output; it is tested after the clamp rather than
+// before it, which is equivalent because NaN compares false against both
+// limits, and keeps it off the common path.
+//
+// Rounding is half away from zero, matching math.Round, but hand-rolled rather
+// than calling it. The equivalence is exact and pinned by test; see the
+// sub-half arm below for the one place the two would otherwise differ.
 func quantize(f, fullScale, posLimit, negLimit float64) int64 {
 	v := f * fullScale
 	switch {
@@ -293,45 +310,6 @@ func quantize(f, fullScale, posLimit, negLimit float64) int64 {
 		return int64(v + 0.5)
 	default:
 		return int64(v - 0.5)
-	}
-}
-
-// decodeInt reads one little-endian integer PCM sample of the given width and
-// returns it as a signed value. The 8-bit case is the odd one out: it is stored
-// biased by 128, so the bias is removed here and nowhere else.
-func decodeInt(b []byte, bits int) int64 {
-	switch bits {
-	case 8:
-		return int64(b[0]) - 128
-	case 16:
-		return int64(int16(binary.LittleEndian.Uint16(b)))
-	case 24:
-		u := uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16
-		if u&0x800000 != 0 {
-			u |= 0xFF000000 // sign-extend bit 23 into the unused high byte
-		}
-		return int64(int32(u))
-	default: // 32
-		return int64(int32(binary.LittleEndian.Uint32(b)))
-	}
-}
-
-// encodeInt writes one signed sample as little-endian integer PCM of the given
-// width. v must already be in range for bits; every caller either shifts into
-// range or clamps. The 8-bit case re-applies the 128 bias.
-func encodeInt(b []byte, v int64, bits int) {
-	switch bits {
-	case 8:
-		b[0] = byte(v + 128)
-	case 16:
-		binary.LittleEndian.PutUint16(b, uint16(v)) //nolint:gosec // G115: v is in int16 range by construction.
-	case 24:
-		u := uint32(v) //nolint:gosec // G115: v is in 24-bit signed range by construction.
-		b[0] = byte(u)
-		b[1] = byte(u >> 8)
-		b[2] = byte(u >> 16) // packed, three bytes, no padding
-	default: // 32
-		binary.LittleEndian.PutUint32(b, uint32(v)) //nolint:gosec // G115: v is in int32 range by construction.
 	}
 }
 
