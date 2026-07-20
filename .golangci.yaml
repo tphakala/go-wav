@@ -1,0 +1,75 @@
+# Adapted from github.com/tphakala/birdnet-go's .golangci.yaml to keep one
+# linting standard across projects. go-wav-specific adaptations:
+#   - dropped the frontend/ exclusion (no frontend here)
+#   - dropped the birdnet-go-specific forbidigo logger patterns and the gosec
+#     settings block (no structured logger; gosec not enabled)
+#   - kept gocritic's ruleguard wired to rules/*.go for modern-Go patterns
+#   - modernize stays disabled: it panics on Go 1.26 + atomic types in
+#     golangci-lint v2.11.4 (known bug)
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - iface
+    - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - predeclared
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - thelper
+    - unconvert
+    - wastedassign
+  disable:
+    - unused
+  settings:
+    gocognit:
+      min-complexity: 50
+    gocritic:
+      # gocritic auto-enables the ruleguard check when settings.ruleguard.rules
+      # is set; the rules/*.go matchers carry the //go:build ruleguard tag so
+      # the normal toolchain ignores them.
+      disabled-checks:
+        - commentFormatting
+        - commentedOutCode
+      enabled-tags:
+        - style
+        - diagnostic
+        - performance
+      settings:
+        ruleguard:
+          rules: "rules/*.go"
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    exhaustive:
+      default-signifies-exhaustive: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+  new: false
