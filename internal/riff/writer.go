@@ -67,6 +67,16 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 	if err := validateDepth(cfg.Format.Format, cfg.Format.BitDepth); err != nil {
 		return nil, err
 	}
+	if cfg.Format.Format.Companded() {
+		// A-law and mu-law are decoded and never encoded. Nothing here turns
+		// linear samples into companded ones, so the only header that could
+		// be written would announce a companding law over a payload that
+		// carries none, and every reader would then expand bytes that were
+		// never compressed. See wav.SampleFormatALaw.
+		return nil, fmt.Errorf(
+			"go-wav/internal/riff: %w: %s is decoded but never written, because nothing here "+
+				"compands linear samples", wav.ErrUnsupported, cfg.Format.Format)
+	}
 	if cfg.Format.Channels <= 0 {
 		return nil, fmt.Errorf("go-wav/internal/riff: channel count %d must be positive", cfg.Format.Channels)
 	}

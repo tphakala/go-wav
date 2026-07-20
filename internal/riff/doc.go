@@ -46,5 +46,13 @@
 // missing pad byte, a data size of zero or 0xFFFFFFFF, a declared size that
 // runs past the end of the file, trailing bytes after the audio, chunks in any
 // order before fmt and data, and unknown chunks anywhere. It does not guess a
-// sample format: a stream it cannot decode is reported, never reinterpreted.
+// sample format: a stream it cannot decode is reported, never reinterpreted,
+// and a fmt chunk naming A-law or mu-law at a width other than the 8 bits
+// G.711 defines is refused rather than read as though the depth field were the
+// mistake.
+//
+// The two companding laws are parsed but, like BW64, never written:
+// [BuildHeader] rejects them, because nothing in this library compands linear
+// samples and the only header it could write would announce a law over a
+// payload that carries none.
 package riff

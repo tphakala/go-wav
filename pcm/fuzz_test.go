@@ -23,6 +23,12 @@ func FuzzDecode(f *testing.F) {
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 8000, BitDepth: 8, Channels: 1}, pattern(7)))
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
 		RF64: pcm.RF64Always}, pattern(64)))
+	// The two companding laws, which no encoder here can produce, so their
+	// seeds are hand-built. They are the one source the decoder expands
+	// without being asked, so a mutation of one reaches that path with a
+	// header the fuzzer would rarely assemble on its own.
+	f.Add(compandedFile(f, tagALaw, 1, 8000, pattern(37)))
+	f.Add(compandedFile(f, tagMuLaw, 2, 8000, pattern(64)))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		optionSets := [][]pcm.Option{
@@ -70,13 +76,28 @@ func FuzzDecode(f *testing.F) {
 			if oneInfo != info {
 				t.Fatalf("StreamInfo: DecodeInterleaved reports %+v, the decoder reports %+v", oneInfo, info)
 			}
-			// A pass-through result is a window onto the input, so it can be no
-			// longer than the input, and its capacity has to stop exactly at
-			// its length: any spare capacity at all is room for a caller's
+			// The result is a window onto the input exactly when the bytes
+			// handed back are the bytes as stored, which needs both that no
+			// conversion was asked for and that the source is not companded:
+			// a companding law is expanded to linear 16-bit with or without
+			// the option, so its result is about twice the stored audio and
+			// cannot possibly alias it. Stating the condition as "no options"
+			// alone would be the stale form of this invariant.
+			//
+			// A window can be no longer than the input it looks into. A
+			// rewritten result is a fresh buffer at a different width, which
+			// may legitimately be wider than the stream it came from.
+			aliases := opts == nil && !info.SourceFormat.Companded()
+			if aliases && len(one) > len(data) {
+				t.Fatalf("a pass-through DecodeInterleaved returned %d bytes from a %d byte stream",
+					len(one), len(data))
+			}
+			// The capacity has to stop exactly at the length either way. On the
+			// aliasing path any spare capacity at all is room for a caller's
 			// append to overwrite whatever their own buffer holds past the
-			// audio. A converted result is a fresh buffer at a different width,
-			// which may legitimately be wider than the stream it came from.
-			if opts == nil && (len(one) > len(data) || cap(one) != len(one)) {
+			// audio; on the allocated path it is a promise the package makes so
+			// that appending behaves the same whichever path a file took.
+			if cap(one) != len(one) {
 				t.Fatalf("DecodeInterleaved returned %d bytes with capacity %d from a %d byte stream",
 					len(one), cap(one), len(data))
 			}
@@ -102,6 +123,11 @@ func FuzzDecodeSeek(f *testing.F) {
 	// has to hit one value out of the whole int64 range, so it is seeded.
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2}, pattern(400)),
 		int64(4611686018427387893))
+	// A companded source, where a seek counts stored frames one byte wide while
+	// Read yields expanded ones two bytes wide. Every other seed has the two
+	// widths equal, so none of them would catch an offset computed against the
+	// wrong one.
+	f.Add(compandedFile(f, tagALaw, 2, 8000, pattern(400)), int64(7))
 
 	f.Fuzz(func(t *testing.T, data []byte, frame int64) {
 		d, err := pcm.NewDecoder(bytes.NewReader(data))

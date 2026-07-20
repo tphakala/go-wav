@@ -31,14 +31,28 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // the whole file. Like [EncodeInterleaved] it is safe for concurrent use,
 // because it draws its decoder from a pool.
 //
-// When no conversion is requested the returned slice ALIASES the audio data
-// within b, so no copy is made. Modifying b afterwards changes the returned
-// samples and vice versa; a caller that needs an independent copy must make
-// one. The slice's capacity stops at the end of the audio, so appending to it
-// allocates rather than overwriting whatever b holds beyond the data chunk.
+// The returned slice ALIASES the audio data within b exactly when the bytes
+// handed back are the bytes as stored, which is the case when no conversion
+// option was given AND the source is neither of the companding laws. No copy
+// is made then: modifying b afterwards changes the returned samples and vice
+// versa, so a caller that needs an independent copy must make one. The slice's
+// capacity stops at the end of the audio, so appending to it allocates rather
+// than overwriting whatever b holds beyond the data chunk.
 //
-// Under a conversion option such as [WithConvertTo] the returned slice is a
-// newly allocated buffer holding the converted samples, and aliases nothing.
+// Every other stream comes back in a freshly allocated buffer that aliases
+// nothing. That covers a conversion option such as [WithConvertTo], and it
+// also covers an A-law or mu-law file decoded with no option at all: a
+// companded byte is expanded to linear 16-bit PCM whether or not a conversion
+// was asked for, so the result is about twice the stored audio and could not
+// be a window onto it. The options alone therefore do not tell a caller which
+// case it is in. Code that writes through the returned slice to edit its own
+// buffer, or that counts on there being no allocation, has to rule the
+// expansion out rather than infer it from the absence of an option:
+// [wav.SampleFormat.Companded] over the returned StreamInfo's SourceFormat
+// answers that.
+//
+// Either way the returned slice's capacity equals its length, so appending to
+// it can never reach memory the caller did not expect to be written.
 //
 // The returned [wav.StreamInfo] describes the returned bytes, not necessarily
 // the stored encoding, matching [Decoder.Info]. Its TotalFrames is the count
@@ -105,9 +119,12 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 
 	// Converting allocates, because the converted samples are a different
 	// width from the stored ones and cannot be written back over the caller's
-	// buffer. A trailing fragment shorter than one stored sample cannot be
-	// converted; sample.Convert ignores it, which is the same thing
-	// [Decoder.Read] does when a source runs out mid-sample.
+	// buffer. This is also the path a companded source takes with no option at
+	// all, since the decoder expands one whether or not it was asked to, which
+	// is why the pass-through above is not simply the no-option case. A
+	// trailing fragment shorter than one stored sample cannot be converted;
+	// sample.Convert ignores it, which is the same thing [Decoder.Read] does
+	// when a source runs out mid-sample.
 	srcWidth := (d.info.SourceBitDepth + 7) / 8
 	dstWidth := (d.convert + 7) / 8
 	if srcWidth <= 0 || dstWidth <= 0 {
@@ -127,7 +144,11 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	if err != nil {
 		return wav.StreamInfo{}, nil, err
 	}
-	return d.info, out[:n], nil
+	// Three-indexed like the pass-through result, so both cases hand back a
+	// slice whose capacity ends at its length. Convert writes exactly
+	// ConvertedLen bytes today, so this trims nothing; it is here so that the
+	// promise holds without depending on that.
+	return d.info, out[:n:n], nil
 }
 
 // convertedBytesFit reports whether converting the given number of samples into

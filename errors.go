@@ -20,12 +20,13 @@ var (
 	ErrCorruptStream = errors.New("go-wav: corrupt stream")
 
 	// ErrUnsupported reports a well-formed stream this package will not
-	// decode, or an output this package will not write: a compressed or
-	// companded format tag such as A-law, mu-law or ADPCM, a bit depth
-	// outside the supported set, a float stream at a width other than 32 or
-	// 64 bits, or a container that is read but never written, which is BW64.
-	// The text is deliberately container-neutral, because the sentinel covers
-	// more than the sample format.
+	// decode, or an output this package will not write: a compressed format
+	// tag such as ADPCM, a bit depth outside the supported set, a float
+	// stream at a width other than 32 or 64 bits, an A-law or mu-law stream
+	// at a width other than the 8 bits G.711 defines, or an encoding that is
+	// read but never written, which is the BW64 container and the two
+	// companding laws. The text is deliberately container-neutral, because
+	// the sentinel covers more than the sample format.
 	ErrUnsupported = errors.New("go-wav: unsupported format")
 
 	// ErrEncoderClosed is returned by Encoder.Write and Encoder.Close after

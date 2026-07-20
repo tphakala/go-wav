@@ -72,6 +72,10 @@ type Config struct {
 	//
 	// A float stream also gets a fact chunk, which the format requires for
 	// every non-PCM encoding.
+	//
+	// The two G.711 companding laws are read but never written, so
+	// wav.SampleFormatALaw and wav.SampleFormatMuLaw are rejected here with
+	// wav.ErrUnsupported; see wav.SampleFormatALaw for why.
 	Format wav.SampleFormat
 
 	// Extensible forces a WAVE_FORMAT_EXTENSIBLE fmt chunk. The zero value
@@ -141,6 +145,14 @@ func (c Config) validate(op string) error {
 			return fmt.Errorf("go-wav/pcm: %s: %w: float bit depth %d (want 32 or 64)",
 				op, wav.ErrUnsupported, c.BitDepth)
 		}
+	case wav.SampleFormatALaw, wav.SampleFormatMuLaw:
+		// Companded output is refused rather than approximated. A decoder
+		// expands A-law and mu-law, but nothing here compands linear samples,
+		// so the only file this could write would announce a companding law
+		// over a payload that carries none. See wav.SampleFormatALaw.
+		return fmt.Errorf(
+			"go-wav/pcm: %s: %w: %s is decoded but never written, because nothing here "+
+				"compands linear samples", op, wav.ErrUnsupported, c.Format)
 	default:
 		return fmt.Errorf("go-wav/pcm: %s: %w: sample format %d", op, wav.ErrUnsupported, c.Format)
 	}

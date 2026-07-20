@@ -15,8 +15,10 @@ const errPrefix = "go-wav/internal/sample: "
 
 // Validate reports whether a (format, bitDepth) pair is one this library
 // supports. Integer PCM is supported at 8, 16, 24 and 32 bits; float is
-// supported at 32 and 64 bits. Anything else, including an unknown format
-// value, returns an error wrapping [wav.ErrUnsupported].
+// supported at 32 and 64 bits; the two G.711 companding laws are supported at
+// the 8 bits they are defined for and at no other width. Anything else,
+// including an unknown format value, returns an error wrapping
+// [wav.ErrUnsupported].
 func Validate(format wav.SampleFormat, bitDepth int) error {
 	switch format {
 	case wav.SampleFormatPCM:
@@ -31,6 +33,14 @@ func Validate(format wav.SampleFormat, bitDepth int) error {
 			return nil
 		}
 		return fmt.Errorf("%sfloat bit depth %d: %w", errPrefix, bitDepth, wav.ErrUnsupported)
+	case wav.SampleFormatALaw, wav.SampleFormatMuLaw:
+		// G.711 defines one code width and no other, so a stream declaring
+		// another one describes nothing that exists and is refused rather
+		// than read as though the depth field were a typo.
+		if bitDepth == 8 {
+			return nil
+		}
+		return fmt.Errorf("%s%s bit depth %d (want 8): %w", errPrefix, format, bitDepth, wav.ErrUnsupported)
 	default:
 		return fmt.Errorf("%ssample format %d: %w", errPrefix, int(format), wav.ErrUnsupported)
 	}
@@ -97,14 +107,21 @@ func Convert(dst, src []byte, srcFormat wav.SampleFormat, srcBits, dstBits int) 
 	src = src[: (need/dstWidth)*srcWidth : (need/dstWidth)*srcWidth]
 	dst = dst[:need:need]
 
-	if srcFormat == wav.SampleFormatPCM {
+	switch srcFormat {
+	case wav.SampleFormatPCM:
 		if srcBits == dstBits {
 			return copy(dst, src), nil
 		}
 		convertIntToInt(dst, src, srcBits, dstBits)
-		return need, nil
+	case wav.SampleFormatALaw:
+		convertCompandedToInt(dst, src, &alawTable, dstBits)
+	case wav.SampleFormatMuLaw:
+		convertCompandedToInt(dst, src, &muLawTable, dstBits)
+	default:
+		// Float, and only float: Validate above rejects every format value
+		// outside the declared set, so nothing else reaches here.
+		convertFloatToInt(dst, src, srcBits, dstBits)
 	}
-	convertFloatToInt(dst, src, srcBits, dstBits)
 	return need, nil
 }
 

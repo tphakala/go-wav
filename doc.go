@@ -28,7 +28,13 @@
 // samples are packed into three bytes with no padding. Float samples are IEEE
 // 754 at 32 or 64 bits with a nominal full scale of [-1, +1].
 //
-// A-law, mu-law, ADPCM and the other compressed WAVE format tags are not
-// supported. A file using one is reported as [ErrUnsupported] rather than
-// decoded incorrectly.
+// The two G.711 companding laws, A-law and mu-law, are decoded. A companded
+// byte is not a sample on any linear scale, so it is always expanded to linear
+// 16-bit PCM on the way out rather than handed back as stored: [StreamInfo]
+// reports the expansion in Format and BitDepth and the stored encoding in
+// SourceFormat and SourceBitDepth. Neither law is written, because nothing here
+// compands linear samples; see [SampleFormatALaw].
+//
+// ADPCM and the other compressed WAVE format tags are not supported. A file
+// using one is reported as [ErrUnsupported] rather than decoded incorrectly.
 package wav

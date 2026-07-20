@@ -35,15 +35,22 @@ Requires Go 1.26 or newer.
 - **Sample formats**: integer PCM at 8, 16, 24 and 32 bits, and IEEE float at 32
   and 64 bits. `WAVE_FORMAT_EXTENSIBLE` is read, and written automatically
   wherever the format requires it.
+- **G.711 companding**: `WAVE_FORMAT_ALAW` and `WAVE_FORMAT_MULAW` are decoded,
+  from the bare format tag and from the extensible SubFormat GUID alike. A
+  companded byte is not a sample on any linear scale, so it is always expanded
+  to linear 16-bit PCM rather than handed back as stored; `SourceFormat` and
+  `SourceBitDepth` report what the file holds. Neither law is written, because
+  nothing here compands linear samples.
 - **Sample rates and channels**: unrestricted. 384 kHz and eight channels are
   ordinary, not special cases.
 - **Validated** bit-exactly in both directions against ffmpeg and sox, across
-  every supported depth and format, 8 kHz to 384 kHz, and RF64.
+  every supported depth and format, 8 kHz to 384 kHz, and RF64. Both companding
+  laws are checked against both tools over all 256 codes.
 
-Not implemented: A-law, mu-law, ADPCM and the other compressed format tags; and
-the metadata chunks (`bext`, `LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`).
-Unknown chunks are skipped cleanly on read, so files carrying them decode
-normally, their metadata simply is not exposed.
+Not implemented: ADPCM and the other compressed format tags; and the metadata
+chunks (`bext`, `LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`). Unknown chunks
+are skipped cleanly on read, so files carrying them decode normally, their
+metadata simply is not exposed.
 
 ## Usage
 
@@ -92,15 +99,21 @@ A whole file already in memory needs no reader and no copy:
 info, samples, err := wavpcm.DecodeInterleaved(b)
 ```
 
-`samples` aliases the audio inside `b` instead of being copied out of it, so
-writing through either one is visible through the other. Under `WithConvertTo`
-the returned buffer is freshly allocated and aliases nothing.
+When the bytes handed back are the bytes as stored, `samples` aliases the audio
+inside `b` instead of being copied out of it, so writing through either one is
+visible through the other. When they are not, the returned buffer is freshly
+allocated and aliases nothing: that is the case under `WithConvertTo`, and also
+over an A-law or mu-law file with no option at all, since one of those is
+expanded whether or not a conversion was asked for. So the options alone do not
+tell you which you got; check `SourceFormat` on the returned `StreamInfo` before
+relying on the aliasing.
 
-By default the decoder is a pass-through: `Read` yields the bytes as stored, so
-24-bit audio stays packed in three bytes and nothing is widened behind your
-back. That also means the encoding varies with the file, and in particular that
-**8-bit data is unsigned while every wider integer depth is signed**, because
-that is how WAV stores them. To normalise:
+By default the decoder is a pass-through for everything but the two companding
+laws: `Read` yields the bytes as stored, so 24-bit audio stays packed in three
+bytes and nothing is widened behind your back. That also means the encoding
+varies with the file, and in particular that **8-bit data is unsigned while
+every wider integer depth is signed**, because that is how WAV stores them. To
+normalise:
 
 ```go
 d, err := wavpcm.NewDecoder(r, wavpcm.WithConvertTo(16))

@@ -67,20 +67,45 @@ const (
 	// SampleFormatFloat is IEEE 754 floating point at 32 or 64 bits, with a
 	// nominal full scale of [-1, +1].
 	SampleFormatFloat
+	// SampleFormatALaw is 8-bit G.711 A-law, the companding law of European
+	// telephony and of WAVE_FORMAT_ALAW. Each byte carries a sign, a segment
+	// and a mantissa that expand to 13 bits of resolution.
+	SampleFormatALaw
+	// SampleFormatMuLaw is 8-bit G.711 mu-law, the companding law of North
+	// American and Japanese telephony and of WAVE_FORMAT_MULAW. Each byte
+	// expands to 14 bits of resolution.
+	SampleFormatMuLaw
 )
 
 // String returns a short lower-case name for the sample format: "pcm" for
-// integer PCM, "float" for IEEE 754 floating point, and "unknown" for a value
-// outside the declared set.
+// integer PCM, "float" for IEEE 754 floating point, "a-law" and "mu-law" for
+// the two G.711 companding laws, and "unknown" for a value outside the declared
+// set.
 func (f SampleFormat) String() string {
 	switch f {
 	case SampleFormatPCM:
 		return "pcm"
 	case SampleFormatFloat:
 		return "float"
+	case SampleFormatALaw:
+		return "a-law"
+	case SampleFormatMuLaw:
+		return "mu-law"
 	default:
 		return "unknown"
 	}
+}
+
+// Companded reports whether the format is one of the G.711 companding laws.
+//
+// A companded byte is not a sample on any linear scale, so it can only ever
+// describe what a file stores, never what a decoder hands back: a companded
+// stream is always expanded to linear 16-bit PCM on the way out. It therefore
+// appears in [StreamInfo.SourceFormat] and never in [StreamInfo.Format], and
+// this predicate exists so that callers branching on that distinction do not
+// have to enumerate the laws themselves.
+func (f SampleFormat) Companded() bool {
+	return f == SampleFormatALaw || f == SampleFormatMuLaw
 }
 
 // StreamInfo describes a WAVE stream. A Decoder reports the properties of the
@@ -98,6 +123,10 @@ type StreamInfo struct {
 	// the bytes Decoder.Read yields, so under a conversion option it is the
 	// converted width, not the width stored in the file. SourceBitDepth
 	// reports the latter.
+	//
+	// A companded source is always converted, so an A-law or mu-law stream
+	// reports the 16 bits its codes expand to here and the 8 bits it stores
+	// in SourceBitDepth.
 	//
 	// It is the container width, which under WAVE_FORMAT_EXTENSIBLE may
 	// exceed the meaningful width reported by ValidBits.
@@ -118,11 +147,15 @@ type StreamInfo struct {
 	// describes the bytes Decoder.Read yields, so a float file being
 	// converted to integer reports SampleFormatPCM here and
 	// SampleFormatFloat in SourceFormat.
+	//
+	// It is never a companded format, because a companded stream is always
+	// expanded; see [SampleFormat.Companded].
 	Format SampleFormat
 
 	// SourceFormat is the sample encoding as it appears in the file. It
-	// differs from Format only when the decoder was asked to convert;
-	// otherwise the two are equal.
+	// differs from Format only when the decoder was asked to convert, or
+	// when the source is companded and was therefore converted without being
+	// asked; otherwise the two are equal.
 	SourceFormat SampleFormat
 
 	// Container is the RIFF flavour the stream was read from or written as.
