@@ -25,6 +25,15 @@ const (
 	ContainerRF64
 	// ContainerBW64 is a BW64 stream as defined by ITU-R BS.2088. It is
 	// structurally identical to RF64 and differs only in its magic.
+	//
+	// It is read but never written, so it is reported in StreamInfo of a
+	// decoder and never of an encoder. A BW64 file exists to carry ADM
+	// metadata in its axml and chna chunks, and this library carries
+	// neither, so writing the magic alone would hand back an RF64 file under
+	// a name that promises metadata it does not hold: strict tooling may
+	// reject it, and a caller who asked for BW64 would reasonably expect the
+	// metadata that is the point of the format. An encoder therefore emits
+	// RIFF or RF64, chosen by pcm.RF64Mode.
 	ContainerBW64
 )
 

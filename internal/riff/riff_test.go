@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strings"
 	"testing"
 
 	wav "github.com/tphakala/go-wav"
@@ -365,24 +366,6 @@ func TestBuildHeaderGoldenBytes(t *testing.T) {
 			wantDataAt: 80,
 		},
 		{
-			name: "bw64_pcm16_stereo_48000_real_ds64",
-			cfg: HeaderConfig{
-				Format:    Format{SampleRate: 48000, Channels: 2, BitDepth: 16, Format: wav.SampleFormatPCM},
-				Container: wav.ContainerBW64,
-				DataSize:  100,
-				Frames:    25,
-			},
-			wantHex: "42573634" + "ffffffff" + "57415645" +
-				"64733634" + "1c000000" +
-				"ac00000000000000" + "6400000000000000" + "1900000000000000" + "00000000" +
-				"666d7420" + "10000000" +
-				"0100" + "0200" + "80bb0000" + "00ee0200" + "0400" + "1000" +
-				"64617461" + "ffffffff",
-			wantFmtLen: fmtSizePCM,
-			wantDS64:   true,
-			wantDataAt: 80,
-		},
-		{
 			name: "plain_riff_with_reserved_junk",
 			cfg: HeaderConfig{
 				Format:      Format{SampleRate: 44100, Channels: 1, BitDepth: 16, Format: wav.SampleFormatPCM},
@@ -486,7 +469,6 @@ func TestRIFFSizeForMatchesFileLength(t *testing.T) {
 	}{
 		{"riff", wav.ContainerRIFF},
 		{"rf64", wav.ContainerRF64},
-		{"bw64", wav.ContainerBW64},
 	}
 
 	for _, c := range containers {
@@ -642,37 +624,63 @@ func TestRoundTripMatrix(t *testing.T) {
 	}
 }
 
-func TestRoundTripSized64Containers(t *testing.T) {
-	for _, container := range []wav.Container{wav.ContainerRF64, wav.ContainerBW64} {
-		t.Run(container.String(), func(t *testing.T) {
-			const frames = 7
-			blockAlign := int64(3 * 2)
-			dataSize := frames * blockAlign
-			lay, err := BuildHeader(HeaderConfig{
-				Format:    Format{SampleRate: 96000, Channels: 2, BitDepth: 24, Format: wav.SampleFormatPCM},
-				Container: container,
-				DataSize:  dataSize,
-				Frames:    frames,
-			})
-			if err != nil {
-				t.Fatalf("BuildHeader: %v", err)
-			}
-			file := cat(lay.Bytes, make([]byte, padded(dataSize)))
-			h, err := parseBytes(file)
-			if err != nil {
-				t.Fatalf("ParseHeader: %v", err)
-			}
-			if h.Info.Container != container {
-				t.Errorf("Container = %v, want %v", h.Info.Container, container)
-			}
-			if h.DataSize != dataSize {
-				t.Errorf("DataSize = %d, want %d", h.DataSize, dataSize)
-			}
-			if h.Info.TotalFrames != frames {
-				t.Errorf("TotalFrames = %d, want %d", h.Info.TotalFrames, frames)
-			}
-		})
+// sized64File builds a file whose sizes live in a ds64 chunk: the header
+// BuildHeader emits, followed by the audio it describes.
+//
+// BuildHeader writes only the RF64 half of the pair, so a BW64 fixture is that
+// same file with its magic swapped. For a file carrying no ADM metadata that is
+// the whole difference between the two, which is also the reason BW64 is read
+// here and never written.
+func sized64File(t *testing.T, container wav.Container, dataSize int64, frames uint64) []byte {
+	t.Helper()
+	lay, err := BuildHeader(HeaderConfig{
+		Format:    Format{SampleRate: 96000, Channels: 2, BitDepth: 24, Format: wav.SampleFormatPCM},
+		Container: wav.ContainerRF64,
+		DataSize:  dataSize,
+		Frames:    frames,
+	})
+	if err != nil {
+		t.Fatalf("BuildHeader: %v", err)
 	}
+	file := cat(lay.Bytes, make([]byte, padded(dataSize)))
+	if container == wav.ContainerBW64 {
+		copy(file[:4], idBW64)
+	}
+	return file
+}
+
+// assertSized64File parses a file carrying a ds64 chunk and checks everything
+// the parser must report about it.
+func assertSized64File(t *testing.T, file []byte, container wav.Container, dataSize int64, frames uint64) {
+	t.Helper()
+	h, err := parseBytes(file)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if h.Info.Container != container {
+		t.Errorf("Container = %v, want %v", h.Info.Container, container)
+	}
+	if h.DataSize != dataSize {
+		t.Errorf("DataSize = %d, want %d", h.DataSize, dataSize)
+	}
+	if h.Info.TotalFrames != frames {
+		t.Errorf("TotalFrames = %d, want %d", h.Info.TotalFrames, frames)
+	}
+}
+
+func TestRoundTripRF64(t *testing.T) {
+	const frames = 7
+	dataSize := int64(frames) * 3 * 2
+	assertSized64File(t, sized64File(t, wav.ContainerRF64, dataSize, frames), wav.ContainerRF64, dataSize, frames)
+}
+
+// TestParseBW64 is the read half of the round trip above for the container this
+// package does not write. Nothing about parsing a BW64 stream differs from
+// parsing an RF64 one, and this is what pins that.
+func TestParseBW64(t *testing.T) {
+	const frames = 7
+	dataSize := int64(frames) * 3 * 2
+	assertSized64File(t, sized64File(t, wav.ContainerBW64, dataSize, frames), wav.ContainerBW64, dataSize, frames)
 }
 
 func TestConventionalChannelMask(t *testing.T) {
@@ -696,16 +704,16 @@ func TestConventionalChannelMask(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. RF64 and BW64 upgrade
+// 4. RF64 upgrade
 // ---------------------------------------------------------------------------
 
-// assertUpgradedWire checks the bytes an in place RF64 or BW64 upgrade left on
-// disk: the new magic, both 32-bit sentinels, and the ds64 chunk that replaced
-// the reserved JUNK chunk.
-func assertUpgradedWire(t *testing.T, buf []byte, lay *Layout, container wav.Container, dataSize int64, frames uint64) {
+// assertUpgradedWire checks the bytes an in place RF64 upgrade left on disk:
+// the new magic, both 32-bit sentinels, and the ds64 chunk that replaced the
+// reserved JUNK chunk.
+func assertUpgradedWire(t *testing.T, buf []byte, lay *Layout, dataSize int64, frames uint64) {
 	t.Helper()
-	if got := string(buf[0:4]); got != container.String() {
-		t.Errorf("magic = %q, want %q", got, container.String())
+	if got := string(buf[0:4]); got != idRF64 {
+		t.Errorf("magic = %q, want %q", got, idRF64)
 	}
 	if got := binary.LittleEndian.Uint32(buf[4:]); got != sentinel32 {
 		t.Errorf("file header size = 0x%08X, want 0x%08X", got, sentinel32)
@@ -737,52 +745,48 @@ func assertUpgradedWire(t *testing.T, buf []byte, lay *Layout, container wav.Con
 }
 
 func TestUpgradeToRF64(t *testing.T) {
-	for _, container := range []wav.Container{wav.ContainerRF64, wav.ContainerBW64} {
-		t.Run(container.String(), func(t *testing.T) {
-			const frames = 500
-			blockAlign := int64(4)
-			dataSize := frames * blockAlign
+	const frames = 500
+	blockAlign := int64(4)
+	dataSize := frames * blockAlign
 
-			lay, err := BuildHeader(HeaderConfig{
-				Format:      Format{SampleRate: 48000, Channels: 2, BitDepth: 16, Format: wav.SampleFormatPCM},
-				Container:   wav.ContainerRIFF,
-				ReserveDS64: true,
-			})
-			if err != nil {
-				t.Fatalf("BuildHeader: %v", err)
-			}
-			m := newFile(t, lay, dataSize)
-			endBefore := m.pos
+	lay, err := BuildHeader(HeaderConfig{
+		Format:      Format{SampleRate: 48000, Channels: 2, BitDepth: 16, Format: wav.SampleFormatPCM},
+		Container:   wav.ContainerRIFF,
+		ReserveDS64: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildHeader: %v", err)
+	}
+	m := newFile(t, lay, dataSize)
+	endBefore := m.pos
 
-			if err := UpgradeToRF64(m, lay, container, dataSize, frames); err != nil {
-				t.Fatalf("UpgradeToRF64: %v", err)
-			}
-			if m.pos != endBefore {
-				t.Errorf("position after upgrade = %d, want %d", m.pos, endBefore)
-			}
-			if int64(len(m.buf)) != lay.DataOffset+dataSize {
-				t.Errorf("file length = %d, want %d", len(m.buf), lay.DataOffset+dataSize)
-			}
+	if err := UpgradeToRF64(m, lay, wav.ContainerRF64, dataSize, frames); err != nil {
+		t.Fatalf("UpgradeToRF64: %v", err)
+	}
+	if m.pos != endBefore {
+		t.Errorf("position after upgrade = %d, want %d", m.pos, endBefore)
+	}
+	if int64(len(m.buf)) != lay.DataOffset+dataSize {
+		t.Errorf("file length = %d, want %d", len(m.buf), lay.DataOffset+dataSize)
+	}
 
-			assertUpgradedWire(t, m.buf, lay, container, dataSize, frames)
+	assertUpgradedWire(t, m.buf, lay, dataSize, frames)
 
-			h, err := parseBytes(m.buf)
-			if err != nil {
-				t.Fatalf("ParseHeader after upgrade: %v", err)
-			}
-			if h.Info.Container != container {
-				t.Errorf("parsed Container = %v, want %v", h.Info.Container, container)
-			}
-			if h.DataSize != dataSize {
-				t.Errorf("parsed DataSize = %d, want %d", h.DataSize, dataSize)
-			}
-			if h.Info.TotalFrames != frames {
-				t.Errorf("parsed TotalFrames = %d, want %d", h.Info.TotalFrames, frames)
-			}
-			if h.DataSizeUnknown() {
-				t.Errorf("DataSizeUnknown() = true, want false")
-			}
-		})
+	h, err := parseBytes(m.buf)
+	if err != nil {
+		t.Fatalf("ParseHeader after upgrade: %v", err)
+	}
+	if h.Info.Container != wav.ContainerRF64 {
+		t.Errorf("parsed Container = %v, want %v", h.Info.Container, wav.ContainerRF64)
+	}
+	if h.DataSize != dataSize {
+		t.Errorf("parsed DataSize = %d, want %d", h.DataSize, dataSize)
+	}
+	if h.Info.TotalFrames != frames {
+		t.Errorf("parsed TotalFrames = %d, want %d", h.Info.TotalFrames, frames)
+	}
+	if h.DataSizeUnknown() {
+		t.Errorf("DataSizeUnknown() = true, want false")
 	}
 }
 
@@ -804,24 +808,61 @@ func TestUpgradeToRF64Errors(t *testing.T) {
 		}
 	})
 
-	t.Run("non_64bit_container", func(t *testing.T) {
+	// Both problems at once. The container is the caller's argument and the
+	// reservation is a property of the header already built, so the argument
+	// is what the error must name; reporting the missing ds64 space would
+	// point at a header that is not the reason the call cannot succeed.
+	t.Run("bad_container_reported_before_missing_ds64_space", func(t *testing.T) {
 		lay, err := BuildHeader(HeaderConfig{
-			Format:      Format{SampleRate: 48000, Channels: 1, BitDepth: 16, Format: wav.SampleFormatPCM},
-			Container:   wav.ContainerRIFF,
-			ReserveDS64: true,
+			Format:    Format{SampleRate: 48000, Channels: 1, BitDepth: 16, Format: wav.SampleFormatPCM},
+			Container: wav.ContainerRIFF,
 		})
 		if err != nil {
 			t.Fatalf("BuildHeader: %v", err)
 		}
+		if lay.DS64Offset != -1 {
+			t.Fatalf("DS64Offset = %d, want -1", lay.DS64Offset)
+		}
 		m := newFile(t, lay, 16)
 		before := bytes.Clone(m.buf)
-		if err := UpgradeToRF64(m, lay, wav.ContainerRIFF, 16, 8); err == nil {
-			t.Fatalf("UpgradeToRF64 to a plain RIFF container returned nil error")
+		err = UpgradeToRF64(m, lay, wav.ContainerBW64, 16, 8)
+		if err == nil {
+			t.Fatalf("UpgradeToRF64 to BW64 without reserved space returned nil error")
+		}
+		if !strings.Contains(err.Error(), "RF64 is the only 64-bit container written") {
+			t.Errorf("error = %v, want the container to be named", err)
+		}
+		if strings.Contains(err.Error(), "no ds64 space was reserved") {
+			t.Errorf("error = %v, want the container problem rather than the reservation", err)
 		}
 		if !bytes.Equal(before, m.buf) {
 			t.Errorf("a rejected upgrade modified the file")
 		}
 	})
+
+	// RF64 is the only container the upgrade writes. Plain RIFF is not a
+	// 64-bit container at all, and BW64 is the one this package reads without
+	// ever writing it, so both must be refused with the file left alone.
+	for _, container := range []wav.Container{wav.ContainerRIFF, wav.ContainerBW64} {
+		t.Run("upgrade_to_"+container.String(), func(t *testing.T) {
+			lay, err := BuildHeader(HeaderConfig{
+				Format:      Format{SampleRate: 48000, Channels: 1, BitDepth: 16, Format: wav.SampleFormatPCM},
+				Container:   wav.ContainerRIFF,
+				ReserveDS64: true,
+			})
+			if err != nil {
+				t.Fatalf("BuildHeader: %v", err)
+			}
+			m := newFile(t, lay, 16)
+			before := bytes.Clone(m.buf)
+			if err := UpgradeToRF64(m, lay, container, 16, 8); err == nil {
+				t.Fatalf("UpgradeToRF64 to %s returned nil error", container)
+			}
+			if !bytes.Equal(before, m.buf) {
+				t.Errorf("a rejected upgrade modified the file")
+			}
+		})
+	}
 }
 
 func TestPlainRIFFWithJUNKStaysReadable(t *testing.T) {
@@ -870,7 +911,7 @@ func TestPatchSizes(t *testing.T) {
 		{"riff_pcm16_odd", wav.ContainerRIFF, false, 8, wav.SampleFormatPCM, 999},
 		{"riff_float32_fact", wav.ContainerRIFF, false, 32, wav.SampleFormatFloat, 321},
 		{"rf64_pcm16", wav.ContainerRF64, false, 16, wav.SampleFormatPCM, 4242},
-		{"bw64_pcm24", wav.ContainerBW64, false, 24, wav.SampleFormatPCM, 77},
+		{"rf64_pcm24", wav.ContainerRF64, false, 24, wav.SampleFormatPCM, 77},
 	}
 
 	for _, tc := range tests {
@@ -1740,6 +1781,17 @@ func TestBuildHeaderRejections(t *testing.T) {
 			cfg:  HeaderConfig{Format: Format{SampleRate: 48000, Channels: 1, BitDepth: 16, Format: wav.SampleFormat(9)}},
 			want: wav.ErrUnsupported,
 		},
+		{
+			// BW64 is a container this package parses, so the refusal to
+			// write one has to be deliberate rather than a side effect of
+			// the unknown-container guard.
+			name: "bw64_container",
+			cfg: HeaderConfig{
+				Format:    Format{SampleRate: 48000, Channels: 1, BitDepth: 16, Format: wav.SampleFormatPCM},
+				Container: wav.ContainerBW64,
+			},
+			want: wav.ErrUnsupported,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2095,13 +2147,19 @@ func TestRF64ZeroDS64DataSizeIsUnknown(t *testing.T) {
 		t.Run(container.String(), func(t *testing.T) {
 			lay, err := BuildHeader(HeaderConfig{
 				Format:    Format{SampleRate: 48000, Channels: 2, BitDepth: 16, Format: wav.SampleFormatPCM},
-				Container: container,
+				Container: wav.ContainerRF64,
 			})
 			if err != nil {
 				t.Fatalf("BuildHeader: %v", err)
 			}
 			// 1000 frames of audio reached the disk; the sizes never did.
 			file := cat(lay.Bytes, make([]byte, 4000))
+			// BW64 is read and never written, so its fixture is the RF64 one
+			// with the magic swapped. The ds64 mechanics under test are the
+			// same for both.
+			if container == wav.ContainerBW64 {
+				copy(file[:4], idBW64)
+			}
 
 			h, err := parseBytes(file)
 			if err != nil {

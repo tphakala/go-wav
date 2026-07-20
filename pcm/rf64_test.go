@@ -27,6 +27,7 @@ const (
 	sentinel32      = uint32(0xFFFFFFFF)
 	magicRIFF       = "RIFF"
 	magicRF64       = "RF64"
+	magicBW64       = "BW64"
 	idDS64Chunk     = "ds64"
 	idJUNKChunk     = "JUNK"
 )

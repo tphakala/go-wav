@@ -33,6 +33,11 @@
 // the 32-bit RIFF size fields. See [RF64Mode] for the policy and the
 // package documentation of Encoder.Close for what happens on each kind of sink.
 //
+// RIFF and RF64 are the whole of the container choice: an encoder writes one or
+// the other. BW64 is read but never written, because the ADM metadata in its
+// axml and chna chunks is what makes a file BW64 rather than RF64 and this
+// library writes no such chunk. See [github.com/tphakala/go-wav.ContainerBW64].
+//
 // The encoder never writes a size field it knows to be wrong. Where a correct
 // size cannot be produced it reports [github.com/tphakala/go-wav.ErrTooLarge].
 //

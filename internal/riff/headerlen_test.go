@@ -23,7 +23,8 @@ func TestHeaderLenMatchesBuildHeader(t *testing.T) {
 		{wav.SampleFormatFloat, 32},
 		{wav.SampleFormatFloat, 64},
 	}
-	containers := []wav.Container{wav.ContainerRIFF, wav.ContainerRF64, wav.ContainerBW64}
+	// Only the containers BuildHeader will emit; BW64 is read only.
+	containers := []wav.Container{wav.ContainerRIFF, wav.ContainerRF64}
 
 	for _, f := range formats {
 		for _, ch := range []int{1, 2, 3, 6, 8} {

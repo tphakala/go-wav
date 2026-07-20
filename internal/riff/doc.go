@@ -27,6 +27,10 @@
 // outgrows RIFF, the header is rewritten in place, JUNK becoming ds64. That is
 // what ffmpeg calls "-rf64 auto", and [UpgradeToRF64] performs it.
 //
+// Only RF64 is emitted. BW64 is parsed and reported, but [BuildHeader] rejects
+// it, because the ADM metadata in the axml and chna chunks is the whole reason
+// a file is BW64 rather than RF64 and this package writes no such chunk.
+//
 // # Integer width
 //
 // Every offset, chunk size and frame count in this package is int64 or uint64.

@@ -428,7 +428,7 @@ func TestSentinelErrors(t *testing.T) {
 	}{
 		{"ErrNotRIFF", wav.ErrNotRIFF, "go-wav: not a RIFF, RF64 or BW64 stream"},
 		{"ErrCorruptStream", wav.ErrCorruptStream, "go-wav: corrupt stream"},
-		{"ErrUnsupported", wav.ErrUnsupported, "go-wav: unsupported sample format"},
+		{"ErrUnsupported", wav.ErrUnsupported, "go-wav: unsupported format"},
 		{"ErrEncoderClosed", wav.ErrEncoderClosed, "go-wav: encoder is closed"},
 		{
 			"ErrTooLarge", wav.ErrTooLarge,

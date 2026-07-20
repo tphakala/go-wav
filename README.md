@@ -7,7 +7,8 @@
 [![Sponsor](https://img.shields.io/github/sponsors/tphakala)](https://github.com/sponsors/tphakala)
 
 A pure-Go library for reading and writing WAV audio, including the 64-bit RF64
-and BW64 extensions for files past 4 GiB. No cgo, no runtime dependencies.
+and BW64 extensions for files past 4 GiB (both are read, RF64 is written). No
+cgo, no runtime dependencies.
 
 It is the WAV member of a family that also covers
 [FLAC](https://github.com/tphakala/go-flac),
@@ -26,8 +27,11 @@ Requires Go 1.26 or newer.
 
 ## Status
 
-- **Containers**: RIFF, RF64 (EBU Tech 3306) and BW64 (ITU-R BS.2088), read and
-  written.
+- **Containers**: RIFF, RF64 (EBU Tech 3306) and BW64 (ITU-R BS.2088) are read;
+  RIFF and RF64 are written. BW64 is read-only because the ADM metadata in its
+  `axml` and `chna` chunks is what makes a file BW64 rather than RF64, and this
+  library writes neither chunk, so the magic on its own would misrepresent the
+  file.
 - **Sample formats**: integer PCM at 8, 16, 24 and 32 bits, and IEEE float at 32
   and 64 bits. `WAVE_FORMAT_EXTENSIBLE` is read, and written automatically
   wherever the format requires it.
@@ -101,8 +105,9 @@ and `SourceFormat`.
 ### Files past 4 GiB
 
 A plain RIFF header stores sizes in 32-bit fields, so it cannot describe 4 GiB
-or more. RF64 and BW64 lift that limit with a `ds64` chunk. The policy is one
-config field, and the vocabulary matches ffmpeg's `-rf64` flag:
+or more. RF64 and BW64 lift that limit with a `ds64` chunk, and RF64 is the one
+the encoder writes. The policy is one config field, and the vocabulary matches
+ffmpeg's `-rf64` flag:
 
 ```go
 cfg.RF64 = wavpcm.RF64Auto   // the default
