@@ -180,11 +180,12 @@ func TestStreamInfoBytesPerFrame(t *testing.T) {
 // counts, and the whole-seconds-plus-remainder split that keeps a large frame
 // count from overflowing int64 the way a naive frames * time.Second would.
 //
-// The oversized rows matter because the frame count is not always derived from
-// bytes that exist. When the data chunk size is unknown the reader falls back
-// to the ds64 sample count, a raw 64-bit field straight out of the file, so a
-// crafted stream can set TotalFrames to anything a uint64 holds. Every step of
-// the arithmetic has to survive that, not just the conversion to int64: the
+// The oversized rows matter because StreamInfo is an ordinary exported struct.
+// The reader bounds a declared frame count before publishing it, so a crafted
+// file can no longer reach the largest of these values through ParseHeader, but
+// a caller assembling a StreamInfo by hand faces no such bound and Duration
+// must survive whatever it is handed. Every step of the arithmetic has to hold,
+// not just the conversion to int64: the
 // rows below pin the conversion and both arithmetic ceilings from either side,
 // so that a bound which is dropped, or moved by one in either direction, turns
 // a zero into a wrapped length or a real length into a zero. Wrapping is the
@@ -202,7 +203,7 @@ func TestStreamInfoDuration(t *testing.T) {
 		{"zero sample rate reports zero regardless of frame count", 48000, 0, 0},
 		{"negative sample rate reports zero", 48000, -1, 0},
 		{"the first frame count past math.MaxInt64 reports zero", math.MaxInt64 + 1, 48000, 0},
-		{"an all-ones ds64 sample count reports zero", math.MaxUint64, 48000, 0},
+		{"an all-ones frame count reports zero", math.MaxUint64, 48000, 0},
 		{"math.MaxInt64 frames survives the conversion and is rejected by the seconds ceiling", math.MaxInt64, 48000, 0},
 		{
 			// Past math.MaxInt64, and chosen so that the wrapped negative

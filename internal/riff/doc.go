@@ -45,7 +45,9 @@
 // Real WAV files violate the specification constantly, so the reader accepts a
 // missing pad byte, a data size of zero or 0xFFFFFFFF, a declared size that
 // runs past the end of the file, trailing bytes after the audio, chunks in any
-// order before fmt and data, and unknown chunks anywhere. It does not guess a
+// order before fmt and data, and unknown chunks anywhere. A declared frame
+// count too large to describe audio this format could hold is reported as
+// unknown rather than repeated to the caller. It does not guess a
 // sample format: a stream it cannot decode is reported, never reinterpreted,
 // and a fmt chunk naming A-law or mu-law at a width other than the 8 bits
 // G.711 defines is refused rather than read as though the depth field were the

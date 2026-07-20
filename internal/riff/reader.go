@@ -196,7 +196,13 @@ func resolveFrames(dataSize, blockAlign int64, ds64 ds64Info, haveDS64 bool, fac
 		return uint64(dataSize / blockAlign)
 	}
 	if haveDS64 && ds64.sampleCount != 0 {
-		return boundedFrames(ds64.sampleCount, blockAlign)
+		// A count the bound rejects is treated as one the header never
+		// offered, so the chain carries on rather than stopping at the source
+		// it just refused. Discarding a usable fact chunk because a sibling
+		// field was corrupt would lose information for nothing.
+		if frames := boundedFrames(ds64.sampleCount, blockAlign); frames != 0 {
+			return frames
+		}
 	}
 	return boundedFrames(factFrames, blockAlign)
 }

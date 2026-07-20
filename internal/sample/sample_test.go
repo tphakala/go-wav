@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"testing"
 
 	wav "github.com/tphakala/go-wav"
@@ -174,8 +175,19 @@ func TestConvertedLen(t *testing.T) {
 		// destination width, and on a 32-bit target that product leaves the
 		// int range well inside the sizes RF64 exists to serve. There is no
 		// number to return, so 0 joins the other cases Convert refuses.
-		{"widening past the int ceiling", math.MaxInt, 24, 32, 0},
+		// The pair that matters is the largest accepted length and the
+		// smallest rejected one. A case far past the ceiling proves only that
+		// something rejects it; loosening the guard by one still passes such a
+		// case while admitting a length whose product is exactly math.MaxInt+1,
+		// which wraps to math.MinInt and reaches a slice expression.
+		//
+		// At 24 to 32 bits the source width is 3 and the destination width 4,
+		// so a source of (MaxInt/4)*3 bytes holds exactly MaxInt/4 samples, the
+		// most whose converted length still fits. Three bytes more is one
+		// sample more, and that is the first length there is no number for.
 		{"widening exactly at the int ceiling", (math.MaxInt / 4) * 3, 24, 32, (math.MaxInt / 4) * 4},
+		{"widening one past the int ceiling", (math.MaxInt/4)*3 + 3, 24, 32, 0},
+		{"widening far past the int ceiling", math.MaxInt, 24, 32, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,6 +216,17 @@ func TestConvertPlanRefusesAnUnrepresentableDestination(t *testing.T) {
 	if !errors.Is(err, io.ErrShortBuffer) {
 		t.Fatalf("convertPlan for an unrepresentable destination = (%d, %v), want an error wrapping io.ErrShortBuffer",
 			need, err)
+	}
+	if need != 0 {
+		t.Errorf("convertPlan returned need = %d alongside its refusal, want 0", need)
+	}
+	// Both refusals wrap io.ErrShortBuffer, so errors.Is alone cannot tell them
+	// apart. The whole reason this one is a separate branch is that it can say
+	// the destination is unrepresentable rather than merely too small, and a
+	// caller reading "need N bytes" would go looking for an N that does not
+	// exist. Pin the wording so the two refusals do not silently converge.
+	if !strings.Contains(err.Error(), "than this platform can address") {
+		t.Errorf("convertPlan refusal = %q, want it to say the size is unaddressable rather than merely short", err)
 	}
 }
 

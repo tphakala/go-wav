@@ -84,23 +84,6 @@ func convertedLen(srcLen, srcBits, dstBits int) (int, bool) {
 	return samples * dstWidth, true
 }
 
-// Convert rewrites src, encoded as srcFormat at srcBits, into dst as signed
-// little-endian integer PCM at dstBits, and returns the number of bytes
-// written. dst must be at least [ConvertedLen] bytes long; Convert never
-// allocates and never grows dst, reporting a short destination as an error
-// wrapping [io.ErrShortBuffer] instead.
-//
-// A src whose length is not a whole number of samples is not an error: the
-// whole samples are converted and the trailing partial sample is ignored, so
-// the returned count reflects only what was actually written. A caller
-// streaming arbitrary chunk boundaries can therefore hand over whatever it has
-// without pre-checking alignment.
-//
-// dstBits must be 8, 16, 24 or 32; converting to float output is not
-// supported. When srcFormat is [wav.SampleFormatPCM] and srcBits equals
-// dstBits the call degenerates to a copy.
-//
-// See the package documentation for the shift, clamp and rounding rules.
 // convertPlan checks everything [Convert] needs to be true before it touches a
 // byte, and returns the number of destination bytes it will write. It takes
 // lengths rather than slices so that the size limit it enforces can be tested
@@ -133,6 +116,29 @@ func convertPlan(srcLen, dstLen int, srcFormat wav.SampleFormat, srcBits, dstBit
 	return need, nil
 }
 
+// Convert rewrites src, encoded as srcFormat at srcBits, into dst as signed
+// little-endian integer PCM at dstBits, and returns the number of bytes
+// written. dst must be at least [ConvertedLen] bytes long; Convert never
+// allocates and never grows dst, reporting a short destination as an error
+// wrapping [io.ErrShortBuffer] instead.
+//
+// A src whose converted length would not fit in an int is refused with that
+// same error, because no dst could ever satisfy it. [ConvertedLen] reports 0
+// for such a source, so sizing dst from it yields an empty buffer rather than
+// an adequate one, and this is the one [io.ErrShortBuffer] a caller must not
+// answer by growing dst and retrying.
+//
+// A src whose length is not a whole number of samples is not an error: the
+// whole samples are converted and the trailing partial sample is ignored, so
+// the returned count reflects only what was actually written. A caller
+// streaming arbitrary chunk boundaries can therefore hand over whatever it has
+// without pre-checking alignment.
+//
+// dstBits must be 8, 16, 24 or 32; converting to float output is not
+// supported. When srcFormat is [wav.SampleFormatPCM] and srcBits equals
+// dstBits the call degenerates to a copy.
+//
+// See the package documentation for the shift, clamp and rounding rules.
 func Convert(dst, src []byte, srcFormat wav.SampleFormat, srcBits, dstBits int) (int, error) {
 	need, err := convertPlan(len(src), len(dst), srcFormat, srcBits, dstBits)
 	if err != nil {

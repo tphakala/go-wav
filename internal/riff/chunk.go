@@ -55,13 +55,18 @@ const sizeUnknown int64 = -1
 const maxUint32 = int64(1)<<32 - 1
 
 // maxDataSize is the largest audio payload the reader will believe a header
-// when it declares. It is far above any real recording and far below the point
-// where a length or a count derived from it stops fitting in an int64, so it
+// when it declares one. It is far above any real recording, and it keeps a
+// whole bit of headroom under math.MaxInt64, so a length or a frame count that
+// passes it still converts to a signed 64-bit value without wrapping. That
 // separates a plausible declaration from a corrupt or hostile one without
 // having to guess where real files stop.
 //
-// Every size and count the header only claims, rather than demonstrates by the
-// bytes actually present, is checked against this one ceiling.
+// It bounds the 64-bit quantities a ds64 chunk declares: the data size
+// directly, and the sample count and fact chunk count once divided by the
+// frame width, since those describe the same bytes in different units. The
+// 32-bit size fields need no such ceiling, sitting far below it by
+// construction, and the auxiliary chunk payloads the reader buffers are
+// bounded separately by maxChunkPayload.
 const maxDataSize uint64 = 1 << 62
 
 // sentinel32 is the value RF64 writes into the 32-bit size fields it has

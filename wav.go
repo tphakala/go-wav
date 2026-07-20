@@ -173,11 +173,21 @@ type StreamInfo struct {
 	// the data chunk size is known the count is derived from it, so it
 	// describes bytes that are present. When the size is absent or
 	// unreadable the count comes instead from whatever the header declared,
-	// a ds64 sampleCount or a fact chunk, which the reader passes through
-	// without checking it against the audio that follows: a declared count
-	// can therefore be any 64-bit value, up to and including
-	// [math.MaxUint64], and need not match the bytes the stream actually
-	// carries. It is 0 only when no source offered a count at all.
+	// a ds64 sampleCount or a fact chunk. A declared count is a claim about
+	// the audio rather than a measurement of it, so it need not match the
+	// bytes the stream actually carries: a recording cut short by a crash
+	// routinely declares more than it holds.
+	//
+	// The reader will not repeat a declaration it can see is impossible. A
+	// declared count is kept only if the audio it claims could fit in a
+	// stream this format can describe, which leaves it small enough that
+	// int64(TotalFrames) stays non-negative. A count that fails is reported
+	// as unknown instead.
+	//
+	// It is therefore 0 in two cases: no source offered a count, or the only
+	// count on offer was not credible. Both mean the frame count is unknown,
+	// and neither means the stream is empty. A caller that needs the real
+	// end of the audio reads until io.EOF rather than trusting this field.
 	TotalFrames uint64
 }
 
@@ -203,13 +213,17 @@ func (si StreamInfo) BytesPerFrame() int {
 // ones are the more dangerous, because nothing about a plausible-looking length
 // invites a second look.
 //
-// A TotalFrames of 0 means the stream carried no frame count at all, and a
-// SampleRate of 0 or less cannot divide anything. The remaining zero cases are
-// arithmetic ceilings, and they are reachable because TotalFrames is not always
-// derived from bytes that exist: when the data chunk size is unknown the reader
-// falls back to a declared count, and a ds64 sampleCount is a raw 64-bit field
-// it passes through unchecked. Each step below therefore rejects what it cannot
-// carry. The conversion to int64 rejects a count above [math.MaxInt64]. The
+// A TotalFrames of 0 means the frame count is unknown, and a SampleRate of 0 or
+// less cannot divide anything. The remaining zero cases are arithmetic
+// ceilings, and they are reachable because TotalFrames is not always derived
+// from bytes that exist: when the data chunk size is unknown the reader falls
+// back to a count the header merely declared. The reader bounds such a count
+// before publishing it, which is what keeps the conversion to int64 below from
+// being the only thing standing between a hostile header and a wrapped result;
+// a [StreamInfo] is an ordinary exported struct, though, so a caller can also
+// build one by hand with any value at all. Each step below therefore rejects
+// what it cannot carry. The conversion to int64 rejects a count above
+// [math.MaxInt64]. The
 // whole-seconds term rejects a count whose whole seconds alone would pass
 // math.MaxInt64 nanoseconds, which is the ceiling time.Duration itself has,
 // about 292 years. The final addition rejects the few counts that clear both

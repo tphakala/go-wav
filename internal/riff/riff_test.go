@@ -1371,9 +1371,16 @@ func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 		want       uint64
 	}{
 		{
-			name:       "measured data size is authoritative and this rule does not apply",
+			// The measured length wins outright, so the ceiling never applies
+			// to it. Stating that needs a declared count present and absurd:
+			// with haveDS64 false there is nothing for the measured size to
+			// beat, and the case would pass even if the precedence were
+			// reversed.
+			name:       "measured data size beats a declared count and this rule does not apply",
 			dataSize:   400,
 			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: math.MaxUint64},
+			haveDS64:   true,
 			want:       100,
 		},
 		{
@@ -1399,6 +1406,19 @@ func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 			ds64:       ds64Info{sampleCount: math.MaxUint64},
 			haveDS64:   true,
 			want:       0,
+		},
+		{
+			// An implausible declaration is no declaration, so the chain
+			// should carry on to the next source rather than stopping at the
+			// one it just rejected. Discarding a usable fact count because a
+			// sibling field was corrupt loses information for nothing.
+			name:       "a rejected sample count falls through to the fact chunk",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: limit + 1},
+			haveDS64:   true,
+			factFrames: 1000,
+			want:       1000,
 		},
 		{
 			name:       "fact frames at the limit are kept",
@@ -1432,6 +1452,22 @@ func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
 			ds64:       ds64Info{sampleCount: 4321},
 			haveDS64:   true,
 			want:       4321,
+		},
+		{
+			name:       "unknown block align keeps a count at the bare ceiling",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: maxDataSize},
+			haveDS64:   true,
+			want:       maxDataSize,
+		},
+		{
+			name:       "unknown block align rejects one past the bare ceiling",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: maxDataSize + 1},
+			haveDS64:   true,
+			want:       0,
 		},
 	}
 	for _, tt := range tests {
