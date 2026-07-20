@@ -23,3 +23,7 @@ cache/
 
 # CodeGraph index database (local code intelligence)
 .codegraph/
+
+# Design specs, implementation plans and research notes are working documents.
+# They are kept locally and in the private tracker, never published here.
+docs/
