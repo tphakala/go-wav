@@ -166,7 +166,7 @@ func resolveDataSize(size uint32, container wav.Container, haveDS64 bool, ds64 d
 		// 64-bit container holding no audio is a contradiction in terms,
 		// and reading to the end of a genuinely empty stream yields nothing
 		// anyway.
-		if ds64.dataSize == 0 || ds64.dataSize > uint64(1)<<62 {
+		if ds64.dataSize == 0 || ds64.dataSize > maxDataSize {
 			return sizeUnknown
 		}
 		//nolint:gosec // G115: bounded by the check above.
@@ -182,15 +182,43 @@ func resolveDataSize(size uint32, container wav.Container, haveDS64 bool, ds64 d
 // is authoritative because it describes bytes actually present; ds64's
 // sampleCount and the fact chunk are consulted only when it is unknown, and
 // never allowed to override it.
+//
+// Both fallbacks are bounded on the way through, the way resolveDataSize bounds
+// the size it returns, because a count nothing corroborates is exactly the
+// thing a corrupt or hostile header supplies. The result lands in the exported
+// StreamInfo.TotalFrames, where an unchecked value near the top of the range
+// makes int64(TotalFrames) negative and turns the obvious buffer sizing into a
+// panic or an absurd allocation. A count that fails the check is reported as 0,
+// which is how the rest of the package says it does not know.
 func resolveFrames(dataSize, blockAlign int64, ds64 ds64Info, haveDS64 bool, factFrames uint64) uint64 {
 	if dataSize != sizeUnknown && blockAlign > 0 {
 		//nolint:gosec // G115: dataSize and blockAlign are both non-negative here.
 		return uint64(dataSize / blockAlign)
 	}
 	if haveDS64 && ds64.sampleCount != 0 {
-		return ds64.sampleCount
+		return boundedFrames(ds64.sampleCount, blockAlign)
 	}
-	return factFrames
+	return boundedFrames(factFrames, blockAlign)
+}
+
+// boundedFrames rejects a declared frame count whose audio could not fit under
+// the maxDataSize ceiling, reporting 0 (unknown) instead. blockAlign is the
+// frame width in bytes; when the width is not known the count is bounded on its
+// own, which still keeps int64(TotalFrames) from going negative.
+//
+// A count reaching here was written into the file by something else and is not
+// corroborated by any bytes the reader has seen, which is what separates it
+// from the measured length the caller prefers.
+func boundedFrames(frames uint64, blockAlign int64) uint64 {
+	limit := maxDataSize
+	if blockAlign > 0 {
+		//nolint:gosec // G115: blockAlign is positive here.
+		limit /= uint64(blockAlign)
+	}
+	if frames > limit {
+		return 0
+	}
+	return frames
 }
 
 // readFileHeader consumes the twelve-byte file header. The 32-bit size it

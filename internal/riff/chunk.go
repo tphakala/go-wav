@@ -54,6 +54,16 @@ const sizeUnknown int64 = -1
 // therefore the point past which a stream needs RF64.
 const maxUint32 = int64(1)<<32 - 1
 
+// maxDataSize is the largest audio payload the reader will believe a header
+// when it declares. It is far above any real recording and far below the point
+// where a length or a count derived from it stops fitting in an int64, so it
+// separates a plausible declaration from a corrupt or hostile one without
+// having to guess where real files stop.
+//
+// Every size and count the header only claims, rather than demonstrates by the
+// bytes actually present, is checked against this one ceiling.
+const maxDataSize uint64 = 1 << 62
+
 // sentinel32 is the value RF64 writes into the 32-bit size fields it has
 // superseded.
 const sentinel32 uint32 = 0xFFFFFFFF

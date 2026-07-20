@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -1322,6 +1323,127 @@ func TestFrameCountFallbacks(t *testing.T) {
 			t.Errorf("TotalFrames = %d, want 4321 from the ds64 sampleCount", h.Info.TotalFrames)
 		}
 	})
+
+	// A ds64 whose data size was never stamped but whose sample count was is
+	// the combination that reaches the fallback, so it is also the combination
+	// that reaches it carrying a count nothing has checked. TotalFrames is
+	// exported, and the obvious uses of it (sizing a buffer, converting to
+	// int64) overflow or panic on a value near the top of the range.
+	t.Run("absurd_ds64_sample_count_is_reported_as_unknown", func(t *testing.T) {
+		b := cat(
+			fileHeader(idRF64, sentinel32, idWAVE),
+			chunk(idDS64, ds64Payload(999, 0, math.MaxUint64)),
+			chunk(idFmt, stdFmtPayload()),
+			chunkLying(idData, sentinel32, make([]byte, 400)),
+		)
+		h, err := parseBytes(b)
+		if err != nil {
+			t.Fatalf("ParseHeader: %v", err)
+		}
+		if !h.DataSizeUnknown() {
+			t.Fatalf("DataSizeUnknown() = false, want true for a zero ds64 dataSize")
+		}
+		if h.Info.TotalFrames != 0 {
+			t.Errorf("TotalFrames = %d, want 0 (unknown) for a sample count no stream could hold",
+				h.Info.TotalFrames)
+		}
+	})
+}
+
+// TestResolveFramesBoundsDeclaredCounts pins the ceiling on the two fallbacks
+// directly, because the fact chunk carries a 32-bit count that no file can push
+// past the limit and that boundary is therefore unreachable through the parser.
+// The limit is the maxDataSize ceiling resolveDataSize applies to a measured
+// length, divided by the frame width: a declared count is credible only if the
+// audio it claims could fit in a stream this format is able to describe.
+func TestResolveFramesBoundsDeclaredCounts(t *testing.T) {
+	t.Parallel()
+	const blockAlign = 4
+	const limit = maxDataSize / blockAlign
+
+	tests := []struct {
+		name       string
+		dataSize   int64
+		blockAlign int64
+		ds64       ds64Info
+		haveDS64   bool
+		factFrames uint64
+		want       uint64
+	}{
+		{
+			name:       "measured data size is authoritative and this rule does not apply",
+			dataSize:   400,
+			blockAlign: blockAlign,
+			want:       100,
+		},
+		{
+			name:       "sample count at the limit is kept",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: limit},
+			haveDS64:   true,
+			want:       limit,
+		},
+		{
+			name:       "sample count one past the limit is unknown",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: limit + 1},
+			haveDS64:   true,
+			want:       0,
+		},
+		{
+			name:       "all ones sample count is unknown",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			ds64:       ds64Info{sampleCount: math.MaxUint64},
+			haveDS64:   true,
+			want:       0,
+		},
+		{
+			name:       "fact frames at the limit are kept",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			factFrames: limit,
+			want:       limit,
+		},
+		{
+			name:       "fact frames one past the limit are unknown",
+			dataSize:   sizeUnknown,
+			blockAlign: blockAlign,
+			factFrames: limit + 1,
+			want:       0,
+		},
+		{
+			// With no frame width there is nothing to multiply by, so the
+			// count is bounded on its own. maxDataSize remains the ceiling,
+			// which is what keeps int64(TotalFrames) from going negative.
+			name:       "unknown block align still bounds the count",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: math.MaxUint64},
+			haveDS64:   true,
+			want:       0,
+		},
+		{
+			name:       "unknown block align keeps a credible count",
+			dataSize:   sizeUnknown,
+			blockAlign: 0,
+			ds64:       ds64Info{sampleCount: 4321},
+			haveDS64:   true,
+			want:       4321,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := resolveFrames(tt.dataSize, tt.blockAlign, tt.ds64, tt.haveDS64, tt.factFrames)
+			if got != tt.want {
+				t.Errorf("resolveFrames(%d, %d, %+v, %v, %d) = %d, want %d",
+					tt.dataSize, tt.blockAlign, tt.ds64, tt.haveDS64, tt.factFrames, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestToleranceDeclaredSizeBeyondEOF(t *testing.T) {
