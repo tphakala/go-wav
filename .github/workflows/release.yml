@@ -19,6 +19,20 @@ jobs:
           # Full history so auto-generated notes can diff against the prior tag.
           fetch-depth: 0
 
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # wav.Version is referenced nowhere but its own declaration, so no build
+      # or test can notice it has gone stale. The tag is the missing input, and
+      # it exists only here. Refusing the release is the point: a published tag
+      # cannot be moved, but a failed workflow can be rerun after a fix.
+      - name: Verify wav.Version matches the tag
+        env:
+          GO_WAV_RELEASE_TAG: ${{ github.ref_name }}
+        run: go test -run TestVersionMatchesReleaseTag -v .
+
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}

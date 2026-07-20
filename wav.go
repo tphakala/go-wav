@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// Version is the module version.
-const Version = "0.1.0"
+// Version is the module version. The release workflow checks it against the tag
+// it is building and refuses to publish a release where the two disagree.
+const Version = "0.2.0"
 
 // headerSize is the number of bytes [Sniff] needs: the four-byte magic, the
 // 32-bit size that follows it, and the four-byte form type.

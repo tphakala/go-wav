@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -521,15 +522,41 @@ func TestSentinelErrors(t *testing.T) {
 	})
 }
 
-// TestVersion pins the shape of Version, and nothing more. It cannot catch the
-// failure that actually matters, a release tagged without bumping the constant,
-// because nothing in this repository ties the constant to a git tag: Version is
-// referenced nowhere except its own declaration and this test, so any
-// semver-shaped string passes whether or not it matches the released version.
-// Catching a stale value would need a release check outside the test suite,
-// comparing the constant against the tag being built.
+// TestVersion pins the shape of Version, and nothing more. On an ordinary run
+// that is all it can do: any semver-shaped string passes, whether or not it
+// matches the version actually being released. The failure that matters, a tag
+// cut without bumping the constant, is caught by
+// [TestVersionMatchesReleaseTag] instead, which needs the tag as input and so
+// cannot run outside a release.
 func TestVersion(t *testing.T) {
 	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(wav.Version) {
 		t.Errorf("Version = %q, want a semver-shaped string", wav.Version)
+	}
+}
+
+// releaseTagEnv names the environment variable the release workflow sets to the
+// tag it is building, which is the only thing that can tell this package which
+// version it is supposed to be.
+const releaseTagEnv = "GO_WAV_RELEASE_TAG"
+
+// TestVersionMatchesReleaseTag is the check the release runs and nothing else
+// does. Version is referenced nowhere but its own declaration and these tests,
+// so no ordinary build can notice it has gone stale; the tag is the missing
+// input, and it exists only while a release is being built.
+//
+// Skipping when the variable is absent is what lets this live with the tests
+// rather than as a shell step in the workflow, where it would drift from the
+// constant it guards. The cost is that a green local run says nothing about
+// this test, which is why the workflow runs it as its own step and fails the
+// release on it rather than relying on the suite.
+func TestVersionMatchesReleaseTag(t *testing.T) {
+	tag, ok := os.LookupEnv(releaseTagEnv)
+	if !ok {
+		t.Skipf("%s is unset; this check runs only while building a release", releaseTagEnv)
+	}
+	want := strings.TrimPrefix(tag, "v")
+	if wav.Version != want {
+		t.Fatalf("Version = %q but the tag being released is %q; bump the constant in wav.go or fix the tag",
+			wav.Version, tag)
 	}
 }
