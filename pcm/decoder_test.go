@@ -590,6 +590,50 @@ func TestDecoderTruncatedFile(t *testing.T) {
 	}
 }
 
+// TestSeekToFrameOverflowingIndex is a regression test for a frame index whose
+// byte offset does not fit in an int64. The multiplication used to be performed
+// anyway and the wrapped product accepted as a real offset, which the clamp
+// could not catch because a wrapped value is not an offset at all.
+//
+// The first index below is the exact value that wraps to minus the data
+// chunk's start offset on a plain 44-byte header at 4 bytes per frame: the seek
+// landed on byte zero, SeekToFrame reported a negative frame, and the next Read
+// handed back the file's own "RIFF" magic as if it were audio. The second wraps
+// to a small positive offset instead, which is the same defect with no visible
+// tell at all. Random fuzzing effectively never finds either, since the index
+// has to be almost exactly one value out of the whole int64 range.
+func TestSeekToFrameOverflowingIndex(t *testing.T) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2}
+	src := pattern(500 * 4)
+	file := encodeFixture(t, cfg, src)
+
+	for _, frame := range []int64{4611686018427387893, 1<<62 + 1, math.MaxInt64} {
+		t.Run(fmt.Sprintf("frame %d", frame), func(t *testing.T) {
+			d, err := pcm.NewDecoder(bytes.NewReader(file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := d.SeekToFrame(frame)
+			if err == nil {
+				t.Fatalf("SeekToFrame(%d) returned no error and reached frame %d", frame, got)
+			}
+			if got != 0 {
+				t.Errorf("SeekToFrame(%d) reported frame %d alongside an error; want 0", frame, got)
+			}
+			// A rejected seek must leave the decoder where it was rather than
+			// half-moved to the wrapped offset.
+			rest, rerr := io.ReadAll(d)
+			if rerr != nil {
+				t.Fatalf("ReadAll after a rejected seek: %v", rerr)
+			}
+			if !bytes.Equal(rest, src) {
+				t.Errorf("after a rejected seek: got %d bytes, want the whole %d-byte stream from the start",
+					len(rest), len(src))
+			}
+		})
+	}
+}
+
 // TestDecoderNilReader checks that a nil source is reported, not dereferenced.
 func TestDecoderNilReader(t *testing.T) {
 	defer func() {

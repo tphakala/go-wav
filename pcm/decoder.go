@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	wav "github.com/tphakala/go-wav"
 	"github.com/tphakala/go-wav/internal/riff"
@@ -82,6 +83,12 @@ func WithConvertTo(bitDepth int) Option {
 // header, and is equivalent to ffmpeg's -ignore_length. The decoder already
 // treats a zero or all-ones size this way; this option forces the behaviour
 // even when the header claims a plausible length.
+//
+// Reading to the end of the source means exactly that: anything stored after
+// the data chunk, such as a trailing LIST or id3 chunk, is handed back as
+// audio, because without a length there is nothing to tell audio and trailer
+// apart. That is the price of recovering a stream whose header lies, so the
+// option belongs on files known to need it rather than on well-formed ones.
 func WithIgnoreLength() Option {
 	return func(c *config) { c.ignoreLength = true }
 }
@@ -210,8 +217,19 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		srcBuf:    d.srcBuf[:0],
 		outBuf:    d.outBuf[:0],
 	}
-	if cfg.ignoreLength {
+	// A decoder with no length to bound reads by runs to the end of the
+	// source, which is what a remaining of -1 means. Routing this through
+	// lengthKnown rather than through cfg.ignoreLength alone keeps the
+	// unknown-length routes and the option answering to one predicate.
+	if !d.lengthKnown() {
 		d.remaining = -1
+	}
+	if cfg.ignoreLength {
+		// TotalFrames may have been derived from the declared size, so
+		// ignoring that size makes the count untrustworthy. It can also have
+		// come from a fact chunk or a ds64 sampleCount on a stream whose byte
+		// length was already unknown; that count is discarded here too, since
+		// the option's whole point is to trust the source over the header.
 		d.info.TotalFrames = 0
 	}
 
@@ -223,6 +241,17 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 		d.info.ValidBits = 0
 	}
 	return nil
+}
+
+// lengthKnown reports whether the decoder has a data chunk length it may bound
+// reads and seeks by.
+//
+// The header's own field is not the whole answer. WithIgnoreLength does not
+// touch hdr.DataSize, because the header can perfectly well declare a plausible
+// size that the option exists to bypass; consulting the field on its own would
+// silently reimpose the exact length the caller asked to ignore.
+func (d *Decoder) lengthKnown() bool {
+	return !d.hdr.DataSizeUnknown() && !d.cfg.ignoreLength
 }
 
 // Info describes the stream.
@@ -392,11 +421,25 @@ func (d *Decoder) WriteTo(w io.Writer) (int64, error) {
 }
 
 // SeekToFrame positions the decoder at an inter-channel frame index and
-// returns the frame it actually reached.
+// returns the frame it reached.
 //
 // It requires the source to implement io.Seeker and reports
-// [wav.ErrSeekUnsupported] otherwise. Seeking past the end of the audio
-// positions at the end, so the next Read reports io.EOF.
+// [wav.ErrSeekUnsupported] otherwise.
+//
+// What a seek past the end does depends on whether the stream declared a
+// length the decoder may trust. When it did, a request beyond the audio is
+// clamped to the end of the data chunk and the returned frame is the one
+// actually reached, so a returned frame lower than the requested one means the
+// stream ran out. When the length is unknown, or [WithIgnoreLength] is
+// discarding it, there is no boundary to clamp against: the seek is performed
+// as asked and the requested frame is returned even if it lies past the audio.
+// The next Read then reports io.EOF, which is the only end-of-stream signal
+// available on that path.
+//
+// The decoder deliberately does not measure the source to recover a boundary
+// for the unknown-length case. Doing so would cost a seek to the end on every
+// call, and would be wrong for a file still being appended to, which is the
+// recovery case WithIgnoreLength exists for.
 func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 	if d.err != nil {
 		return 0, d.err
@@ -415,8 +458,25 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 	}
 	dataStart := d.dataStart
 
+	// The frame index becomes a byte offset by multiplying, and both operands
+	// are int64, so a large enough index wraps. A wrapped offset is worse than
+	// an out-of-range one, because the clamp below can no longer recognise it:
+	// a wrap to a negative value seeks in front of the audio and hands the
+	// caller the file header as if it were samples, and a wrap to a small
+	// positive value quietly lands somewhere inside the first few frames. No
+	// such frame can exist in a stream addressable by an int64 byte offset, so
+	// the honest answer is to refuse it rather than to seek somewhere else.
+	maxFrame := (math.MaxInt64 - dataStart) / perFrame
+	if frame > maxFrame {
+		return 0, fmt.Errorf(
+			"go-wav/pcm: SeekToFrame: frame index %d exceeds the largest addressable frame %d",
+			frame, maxFrame)
+	}
+
+	lengthKnown := d.lengthKnown()
+
 	offset := frame * perFrame
-	if d.hdr.DataSize >= 0 && offset > d.hdr.DataSize {
+	if lengthKnown && offset > d.hdr.DataSize {
 		offset = d.hdr.DataSize - d.hdr.DataSize%perFrame
 	}
 	if _, err := seeker.Seek(dataStart+offset, io.SeekStart); err != nil {
@@ -430,8 +490,13 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 	if d.stream != nil {
 		d.stream.Reset(d.br)
 	}
-	if d.hdr.DataSize >= 0 {
+	if lengthKnown {
 		d.remaining = d.hdr.DataSize - offset
+	} else {
+		// The length is unknown, or is being ignored, so there is no bound to
+		// clamp remaining to. A Read after this seek runs to the real end of
+		// the source, exactly as it would have without any seek at all.
+		d.remaining = -1
 	}
 	d.srcBuf = d.srcBuf[:0]
 	// Converted bytes staged from before the seek describe the old position,

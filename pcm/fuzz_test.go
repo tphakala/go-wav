@@ -61,6 +61,12 @@ func FuzzDecode(f *testing.F) {
 func FuzzDecodeSeek(f *testing.F) {
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2}, pattern(400)), int64(3))
 	f.Add([]byte("RIFF\x00\x00\x00\x00WAVE"), int64(0))
+	// The frame index that makes frame*bytesPerFrame wrap to exactly minus the
+	// data chunk's start offset, which used to seek to byte zero and report a
+	// negative frame. Random fuzzing would effectively never find it, since it
+	// has to hit one value out of the whole int64 range, so it is seeded.
+	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2}, pattern(400)),
+		int64(4611686018427387893))
 
 	f.Fuzz(func(t *testing.T, data []byte, frame int64) {
 		d, err := pcm.NewDecoder(bytes.NewReader(data))
