@@ -2162,6 +2162,144 @@ func TestNonsensicalBlockAlignIsRepaired(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// I/O error propagation
+// ---------------------------------------------------------------------------
+
+var errSink = errors.New("sink failure")
+
+// failingSeeker fails the nth Seek call, counting from one.
+type failingSeeker struct {
+	memFile
+	failSeekOn int
+	seeks      int
+	failWrite  bool
+}
+
+func (f *failingSeeker) Seek(off int64, whence int) (int64, error) {
+	f.seeks++
+	if f.seeks == f.failSeekOn {
+		return 0, errSink
+	}
+	return f.memFile.Seek(off, whence)
+}
+
+func (f *failingSeeker) Write(p []byte) (int, error) {
+	if f.failWrite {
+		return 0, errSink
+	}
+	return f.memFile.Write(p)
+}
+
+func TestPatchSizesPropagatesSinkErrors(t *testing.T) {
+	build := func(t *testing.T) *Layout {
+		t.Helper()
+		lay, err := BuildHeader(HeaderConfig{
+			Format:      Format{SampleRate: 48000, Channels: 2, BitDepth: 16, Format: wav.SampleFormatPCM},
+			Container:   wav.ContainerRIFF,
+			ReserveDS64: true,
+		})
+		if err != nil {
+			t.Fatalf("BuildHeader: %v", err)
+		}
+		return lay
+	}
+
+	tests := []struct {
+		name string
+		sink func() *failingSeeker
+	}{
+		{"seek_current_fails", func() *failingSeeker { return &failingSeeker{failSeekOn: 1} }},
+		{"seek_to_start_fails", func() *failingSeeker { return &failingSeeker{failSeekOn: 2} }},
+		{"seek_back_to_end_fails", func() *failingSeeker { return &failingSeeker{failSeekOn: 3} }},
+		{"write_fails", func() *failingSeeker { return &failingSeeker{failWrite: true} }},
+	}
+
+	for _, tc := range tests {
+		t.Run("patch_"+tc.name, func(t *testing.T) {
+			lay := build(t)
+			w := tc.sink()
+			if err := PatchSizes(w, lay, wav.ContainerRIFF, 4000, 1000); !errors.Is(err, errSink) {
+				t.Errorf("PatchSizes error = %v, want errors.Is(err, errSink)", err)
+			}
+		})
+		t.Run("upgrade_"+tc.name, func(t *testing.T) {
+			lay := build(t)
+			w := tc.sink()
+			if err := UpgradeToRF64(w, lay, wav.ContainerRF64, 4000, 1000); !errors.Is(err, errSink) {
+				t.Errorf("UpgradeToRF64 error = %v, want errors.Is(err, errSink)", err)
+			}
+		})
+	}
+}
+
+// errAfterReader yields n bytes, then fails with a non-EOF error.
+type errAfterReader struct {
+	data []byte
+	pos  int
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, errSink
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestParseHeaderPropagatesSourceErrors(t *testing.T) {
+	full := cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunk("LIST", make([]byte, 4000)),
+		chunk(idFmt, stdFmtPayload()),
+		chunk(idData, make([]byte, 8)),
+	)
+
+	// Cut at points that land inside each of the reader's consumption paths:
+	// the file header, a chunk header, a buffered payload and a discarded one.
+	// A cut past the data chunk header is not included, since the header is
+	// complete by then and parsing it is correct.
+	for _, cut := range []int{0, 6, 14, 20, 2000, len(full) - 10} {
+		t.Run(fmt.Sprintf("cut_at_%d", cut), func(t *testing.T) {
+			r := bufio.NewReader(&errAfterReader{data: full[:cut]})
+			h, err := ParseHeader(r)
+			if err == nil {
+				t.Fatalf("ParseHeader succeeded on a failing source and returned %+v", h)
+			}
+			if h != nil {
+				t.Errorf("ParseHeader returned a header alongside an error")
+			}
+		})
+	}
+}
+
+func TestDiscardNTolerates32BitSizes(t *testing.T) {
+	// A chunk claiming close to 4 GiB must be walked without overflowing int
+	// on a 32-bit target and without reading 4 GiB.
+	b := cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunkLying("LIST", 0xFFFFFFFF, []byte("INFO")),
+	)
+	br := bufio.NewReader(bytes.NewReader(b))
+	if _, err := ParseHeader(br); !errors.Is(err, wav.ErrCorruptStream) {
+		t.Errorf("ParseHeader error = %v, want wav.ErrCorruptStream (no fmt chunk)", err)
+	}
+
+	// The helper itself, straight through.
+	br2 := bufio.NewReader(bytes.NewReader(make([]byte, 100)))
+	if err := discardN(br2, 0xFFFFFFFF); err != nil {
+		t.Errorf("discardN past the end of the stream: %v", err)
+	}
+	br3 := bufio.NewReader(bytes.NewReader(make([]byte, 100)))
+	if err := discardN(br3, 40); err != nil {
+		t.Errorf("discardN(40): %v", err)
+	}
+	if got := br3.Buffered(); got != 60 {
+		t.Errorf("after discardN(40) the reader has %d bytes buffered, want 60", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 10. Fuzz
 // ---------------------------------------------------------------------------
 

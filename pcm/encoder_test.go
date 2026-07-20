@@ -12,6 +12,61 @@ import (
 	pcm "github.com/tphakala/go-wav/pcm"
 )
 
+// testEncoderChunkSizeCase is the body of TestEncoderAwkwardChunkSizes.
+func testEncoderChunkSizeCase(t *testing.T, cc struct {
+	name string
+	cfg  pcm.Config
+}, chunk int) {
+	t.Helper()
+	const frames = 97
+	width := (cc.cfg.BitDepth + 7) / 8
+	src := pattern(frames * cc.cfg.Channels * width)
+	if cc.cfg.Format == wav.SampleFormatFloat {
+		src = floatPattern(frames*cc.cfg.Channels, cc.cfg.BitDepth)
+	}
+
+	sink := &memSeeker{}
+	e, err := pcm.NewEncoder(sink, cc.cfg)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	for i := 0; i < len(src); i += chunk {
+		end := min(i+chunk, len(src))
+		n, werr := e.Write(src[i:end])
+		if werr != nil {
+			t.Fatalf("Write at %d: %v", i, werr)
+		}
+		if n != end-i {
+			t.Fatalf("Write at %d returned %d, want %d", i, n, end-i)
+		}
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	d, err := pcm.NewDecoder(bytes.NewReader(sink.b))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	got, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, src) {
+		t.Errorf("payload differs: got %d bytes, want %d", len(got), len(src))
+		for i := range min(len(got), len(src)) {
+			if got[i] != src[i] {
+				t.Errorf("first difference at byte %d: got %#02x want %#02x",
+					i, got[i], src[i])
+				break
+			}
+		}
+	}
+	if d.Info().TotalFrames != frames {
+		t.Errorf("TotalFrames: got %d want %d", d.Info().TotalFrames, frames)
+	}
+}
+
 // TestEncoderAwkwardChunkSizes drives Write with buffer lengths that split a
 // sample in half, which is where the carry path either works or corrupts the
 // payload.
@@ -35,53 +90,7 @@ func TestEncoderAwkwardChunkSizes(t *testing.T) {
 	for _, cc := range configs {
 		for _, chunk := range chunkSizes {
 			t.Run(fmt.Sprintf("%s/chunk %d", cc.name, chunk), func(t *testing.T) {
-				const frames = 97
-				width := (cc.cfg.BitDepth + 7) / 8
-				src := pattern(frames * cc.cfg.Channels * width)
-				if cc.cfg.Format == wav.SampleFormatFloat {
-					src = floatPattern(frames*cc.cfg.Channels, cc.cfg.BitDepth)
-				}
-
-				sink := &memSeeker{}
-				e, err := pcm.NewEncoder(sink, cc.cfg)
-				if err != nil {
-					t.Fatalf("NewEncoder: %v", err)
-				}
-				for i := 0; i < len(src); i += chunk {
-					end := min(i+chunk, len(src))
-					n, werr := e.Write(src[i:end])
-					if werr != nil {
-						t.Fatalf("Write at %d: %v", i, werr)
-					}
-					if n != end-i {
-						t.Fatalf("Write at %d returned %d, want %d", i, n, end-i)
-					}
-				}
-				if err := e.Close(); err != nil {
-					t.Fatalf("Close: %v", err)
-				}
-
-				d, err := pcm.NewDecoder(bytes.NewReader(sink.b))
-				if err != nil {
-					t.Fatalf("NewDecoder: %v", err)
-				}
-				got, err := io.ReadAll(d)
-				if err != nil {
-					t.Fatalf("ReadAll: %v", err)
-				}
-				if !bytes.Equal(got, src) {
-					t.Errorf("payload differs: got %d bytes, want %d", len(got), len(src))
-					for i := range min(len(got), len(src)) {
-						if got[i] != src[i] {
-							t.Errorf("first difference at byte %d: got %#02x want %#02x",
-								i, got[i], src[i])
-							break
-						}
-					}
-				}
-				if d.Info().TotalFrames != frames {
-					t.Errorf("TotalFrames: got %d want %d", d.Info().TotalFrames, frames)
-				}
+				testEncoderChunkSizeCase(t, cc, chunk)
 			})
 		}
 	}
@@ -127,7 +136,7 @@ func TestEncoderCloseIdempotent(t *testing.T) {
 			t.Fatalf("Close: %v", first)
 		}
 		for i := 2; i <= 3; i++ {
-			if again := e.Close(); again != first {
+			if again := e.Close(); !errors.Is(again, first) {
 				t.Errorf("Close call %d returned %v, want %v", i, again, first)
 			}
 		}

@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"maps"
+	"slices"
 	"testing"
 )
 
@@ -58,11 +60,7 @@ func requireChunk(tb testing.TB, b []byte, id string) chunkSpan {
 
 // chunkIDs lists the identifiers of an indexed stream, for error messages.
 func chunkIDs(spans map[string]chunkSpan) []string {
-	ids := make([]string, 0, len(spans))
-	for id := range spans {
-		ids = append(ids, id)
-	}
-	return ids
+	return slices.Collect(maps.Keys(spans))
 }
 
 // magic is the four-character container identifier of a stream.

@@ -60,6 +60,8 @@ type Layout struct {
 // When cfg.DataSize is zero the size fields are written as zero and the caller
 // is expected to patch them through [PatchSizes], or to have declared the
 // length up front so that this function can compute them.
+//
+//nolint:gocritic // HeaderConfig by value mirrors the by-value Config of the public API.
 func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 	if err := validateDepth(cfg.Format.Format, cfg.Format.BitDepth); err != nil {
 		return nil, err

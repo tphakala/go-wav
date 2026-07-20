@@ -319,7 +319,7 @@ func TestDecoderIgnoreLength(t *testing.T) {
 		t.Fatalf("fixture data size field is %d, want %d", span.size, len(src))
 	}
 	// Lie: claim only the first 40 bytes are audio.
-	lying := append([]byte(nil), file...)
+	lying := bytes.Clone(file)
 	binary.LittleEndian.PutUint32(lying[span.payload-4:], 40)
 
 	t.Run("without the option only the declared bytes come back", func(t *testing.T) {
@@ -686,7 +686,7 @@ func TestDecoderRejectsMalformedStreams(t *testing.T) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
 	good := encodeFixture(t, cfg, pattern(64))
 
-	noFmt := append([]byte(nil), good[:12]...)
+	noFmt := bytes.Clone(good[:12])
 	noFmt = append(noFmt, 'd', 'a', 't', 'a', 0, 0, 0, 0)
 
 	cases := []struct {
@@ -697,7 +697,7 @@ func TestDecoderRejectsMalformedStreams(t *testing.T) {
 		{"empty", nil, wav.ErrNotRIFF},
 		{"short of a file header", good[:8], wav.ErrNotRIFF},
 		{"wrong magic", append([]byte("XXXX"), good[4:]...), wav.ErrNotRIFF},
-		{"wrong form type", append(append([]byte(nil), good[:8]...),
+		{"wrong form type", append(bytes.Clone(good[:8]),
 			append([]byte("AVI "), good[12:]...)...), wav.ErrNotRIFF},
 		{"no fmt chunk", noFmt, wav.ErrCorruptStream},
 		{"header only", good[:12], wav.ErrCorruptStream},
@@ -720,7 +720,7 @@ func TestDecoderRejectsMalformedStreams(t *testing.T) {
 func TestDecoderRF64WithoutDS64(t *testing.T) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
 	good := encodeFixture(t, cfg, pattern(64))
-	broken := append([]byte(nil), good...)
+	broken := bytes.Clone(good)
 	copy(broken[0:4], "RF64")
 
 	_, err := pcm.NewDecoder(bytes.NewReader(broken))

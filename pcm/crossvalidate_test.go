@@ -100,7 +100,7 @@ func TestDecodeFFmpegOutput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			d, err := pcm.NewDecoder(f)
 			if err != nil {
@@ -159,7 +159,9 @@ func TestFFmpegDecodesOurOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := pcm.EncodeInterleaved(f, tc.cfg, src); err != nil {
-				f.Close()
+				if err := f.Close(); err != nil {
+					t.Fatalf("close after encode error: %v", err)
+				}
 				t.Fatalf("encode: %v", err)
 			}
 			if err := f.Close(); err != nil {
@@ -193,7 +195,7 @@ func TestDecodeFFmpegRF64(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(head[0:4]) != "RF64" {
+	if string(head[0:4]) != magicRF64 {
 		t.Fatalf("ffmpeg did not produce RF64, magic is %q", head[0:4])
 	}
 	if !wav.Sniff(head) {
@@ -244,16 +246,20 @@ func TestFFmpegDecodesOurRF64(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := pcm.EncodeInterleaved(f, cfg, src); err != nil {
-		f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatalf("close after encode error: %v", err)
+		}
 		t.Fatalf("encode: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 
 	head, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(head[0:4]) != "RF64" {
+	if string(head[0:4]) != magicRF64 {
 		t.Fatalf("expected RF64 magic, got %q", head[0:4])
 	}
 
@@ -285,10 +291,14 @@ func TestSoxReadsOurOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := pcm.EncodeInterleaved(f, tc.cfg, src); err != nil {
-				f.Close()
+				if err := f.Close(); err != nil {
+					t.Fatalf("close after encode error: %v", err)
+				}
 				t.Fatalf("encode: %v", err)
 			}
-			f.Close()
+			if err := f.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
 
 			// sox writes any parse complaint to stderr, so a clean run with
 			// the right answers is the assertion.

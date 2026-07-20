@@ -128,18 +128,24 @@ type StreamInfo struct {
 }
 
 // BytesPerSample is the storage width of a single-channel sample in bytes.
+//
+//nolint:gocritic // a value receiver is the right shape for a value type callers receive by value.
 func (si StreamInfo) BytesPerSample() int {
 	return (si.BitDepth + 7) / 8
 }
 
 // BytesPerFrame is the storage width of one inter-channel frame in bytes. It
 // is the value a WAVE fmt chunk records as nBlockAlign.
+//
+//nolint:gocritic // a value receiver is the right shape for a value type callers receive by value.
 func (si StreamInfo) BytesPerFrame() int {
 	return si.BytesPerSample() * si.Channels
 }
 
 // Duration is the length of the stream. It is 0 when TotalFrames or SampleRate
 // is 0, so a stream of unknown length reports 0 rather than a wrong answer.
+//
+//nolint:gocritic // a value receiver is the right shape for a value type callers receive by value.
 func (si StreamInfo) Duration() time.Duration {
 	if si.TotalFrames == 0 || si.SampleRate <= 0 {
 		return 0

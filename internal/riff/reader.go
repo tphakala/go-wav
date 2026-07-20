@@ -225,9 +225,9 @@ func readFileHeader(br *bufio.Reader) (wav.Container, error) {
 
 // readChunkHeader consumes one chunk header, resolving a missing pad byte left
 // over from the previous chunk.
-func readChunkHeader(br *bufio.Reader) (string, uint32, error) {
+func readChunkHeader(br *bufio.Reader) (id string, size uint32, err error) {
 	var hdr [ChunkHeaderSize]byte
-	if _, err := io.ReadFull(br, hdr[:]); err != nil {
+	if _, err := io.ReadFull(br, hdr[:]); err != nil { //nolint:govet // shadowing the named result is intentional here.
 		if errors.Is(err, io.ErrUnexpectedEOF) {
 			// A trailing fragment too short to be a chunk is not damage
 			// worth reporting; it is the end of the useful stream.
