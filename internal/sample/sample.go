@@ -176,13 +176,34 @@ func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 }
 
 // Every kernel below drives its loop off the destination, as the blocked path
-// does, and reslices the source to the extent that implies. Slicing to an exact
-// length and capacity does two things: it turns a caller that passed a source
-// shorter than the destination into a panic on that one reslice rather than a
-// read past the end, and it lets the compiler prove the per-element accesses in
-// range so it emits no check for them. The three-byte window each 24-bit kernel
-// takes is sliced with an explicit [:3] for the same reason, so the three byte
-// reads inside it cost nothing beyond the one check on the window itself.
+// does, and reslices the source to the extent that implies, with an explicit
+// capacity. That reslice is the kernel's one guard: a source too short for the
+// destination fails on it, at a known line, rather than being read past the end
+// sample by sample. What "too short" means there is short capacity, not short
+// length, because the upper bound of a slice expression is checked against
+// capacity. It is nevertheless a real guard as these kernels are wired up,
+// because Convert caps src with the three-index form before dispatching, which
+// makes capacity and length equal; a caller reaching a kernel directly with a
+// short length inside a longer capacity is outside the contract and this does
+// not catch it. The explicit capacity on those reslices is not what raises the
+// panic, since the upper bound is checked against capacity with or without it;
+// it is there so that a later reslice inside a kernel cannot extend back past
+// the sizing one.
+//
+// What the sizing reslice does not do is remove the per-element bounds checks,
+// however plausible that sounds. Under -d=ssa/check_bce/debug=1 every kernel
+// still emits an IsSliceInBounds for every reslice it takes inside the loop:
+// the dst[i*N:] all four write through, the src[i*M:] the three that read the
+// source by offset take (convert8to16 does not, because it ranges over src
+// instead), and in the two 24-bit kernels the [:3] window on top of those. To
+// the reslices add an IsInBounds per inlined encoding/binary helper, which is
+// one in three of the kernels and two in convert16to32, where a Uint16 read
+// feeds a PutUint32 write. The one place the slicing does buy something is that
+// window: inside an explicit [:3], the reads of b[0], b[1] and b[2] emit
+// nothing at all, so it costs one check on itself and nothing further per byte.
+// None of this is amd64-specific: the flag's output for this package is
+// byte-identical under GOARCH=amd64 and GOARCH=arm64. Re-run it before
+// asserting otherwise.
 
 // convert8to16 widens biased 8-bit PCM to signed 16-bit.
 //
@@ -248,14 +269,33 @@ func convert24to16(dst, src []byte) {
 
 // blockSamples is how many samples the conversion loops stage at a time.
 //
-// The buffer puts these frames at roughly 4.2 KiB, over a goroutine's 2 KiB
-// starting stack, so the first conversion on a fresh goroutine pays one stack
-// growth. Shrinking the block to fit under that stack was tried and dropped:
+// At 1024 samples the staging buffer is 4096 bytes, and the frame holding it is
+// that buffer plus somewhere around 150 bytes of everything else, which puts it
+// well over a goroutine's 2 KiB starting stack, so the first conversion on a
+// fresh goroutine pays one stack growth. Only two functions pay it: the four
+// single-pass kernels above never touch the staging buffer and their frames are
+// a couple of words wide, so the width pairs they cover are unaffected, and what
+// is left paying is the float path and the eight integer pairs that still fall
+// through to the blocked one.
+//
+// The exact frame sizes are a property of the architecture and the toolchain,
+// not of this code, so read them off `go build -gcflags=-S` for the target in
+// hand rather than trusting a number written here. With Go 1.26.3 the blocked
+// path came out at 4240 bytes on amd64 and 4224 on arm64, the float path at
+// 4280 and 4240, and each of the four kernels at 8 bytes and 16. Whether the
+// kernels are additionally marked NOSPLIT varies the same way: on amd64 they
+// are, on arm64 they are not.
+//
+// Shrinking the block to fit under that stack was tried and dropped:
 // interleaved measurement put the difference at a couple of percent in favour
-// of the larger block, not significant per benchmark, and fitting would have
-// meant going down to about 160 samples rather than the 256 that looks like it
-// fits. Go also grows a goroutine's starting stack adaptively, so a process
-// converting repeatedly stops paying the growth at all.
+// of the larger block, not significant per benchmark. Fitting would also have
+// meant cutting the block to a quarter: at roughly 150 bytes of frame outside
+// the buffer there is room for about 470 int32 samples under 2 KiB, and on the
+// two architectures measured it is (2048-144)/4 = 476 and (2048-128)/4 = 480,
+// so 512 does not fit either way and 256 is the largest power of two that does
+// with any room for the callers' frames above it. Go also grows a goroutine's
+// starting stack adaptively, so a process converting repeatedly stops paying
+// the growth at all.
 //
 // The size is therefore chosen for the block loops themselves rather than for
 // the stack: large enough to amortise the per-block width switch, small enough
@@ -282,8 +322,15 @@ func decodeBlock(out []int32, src []byte, bits int) {
 		src = src[:len(out)*3]
 		for i := range out {
 			b := src[i*3:][:3]
-			// Highest index first, as in encodeBlock, so the compiler drops
-			// the per-element checks on the other two.
+			// The [:3] window is what makes these three reads free, not the
+			// order they are written in: under -d=ssa/check_bce/debug=1,
+			// rewriting them in ascending order leaves the output for this
+			// package byte-identical, while dropping the window and keeping
+			// the order trades the window's own IsSliceInBounds for an
+			// IsInBounds on the b[2] read. encodeBlock's 24-bit arm carries a
+			// similar-looking note that rests on the other mechanism: it has
+			// no window, so there the ordering is what carries the one check,
+			// and writing those three in ascending order costs three.
 			u := uint32(b[2])<<16 | uint32(b[0]) | uint32(b[1])<<8
 			if u&0x800000 != 0 {
 				u |= 0xFF000000 // sign-extend bit 23 into the unused high byte
@@ -332,6 +379,17 @@ func encodeBlock(dst []byte, in []int32, bits int) {
 
 // convertFloatToInt quantises IEEE 754 samples to signed integer PCM. dst and
 // src must already be sized to a whole number of matching samples.
+//
+// This path deliberately gets no equivalent of the single-pass kernels above,
+// and the reason is not that nobody has written them. Those kernels exist
+// because a shift by a multiple of eight is a byte move, so each destination
+// byte is some source byte at another offset and the sample value never has to
+// be formed. Quantisation has no such form at any width: every sample needs a
+// multiply by full scale, a clamp against both limits and a round to nearest,
+// so the value must be computed rather than repositioned. Blocking the loop to
+// hoist the two width switches, which is what happens below, is therefore the
+// whole of the structural saving available here, and the rest of the work went
+// into quantize instead.
 func convertFloatToInt(dst, src []byte, srcBits, dstBits int) {
 	srcWidth := bytesPerSample(srcBits)
 	dstWidth := bytesPerSample(dstBits)
