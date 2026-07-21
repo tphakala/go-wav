@@ -68,9 +68,12 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 //
 // A widening conversion of a large enough file can be refused outright, when
 // the converted result would be longer than this platform can express as a
-// length. Only a 32-bit build can reach it, and only with a source in the
-// hundreds of megabytes, since on a 64-bit build no file large enough to
-// trigger it can be held in memory to begin with.
+// length. Only a 32-bit build can reach it: the smallest source that does is
+// 512 MiB of 8-bit audio widened to 32-bit, and a narrower widening needs more
+// still, up to the point where the source itself would no longer be an
+// addressable slice. On a 64-bit build the smallest such source is two
+// exabytes, so no file that could trigger it can be held in memory to begin
+// with.
 //
 // That error deliberately wraps no sentinel, so errors.Is will not match it
 // against anything. Every sentinel this package has describes something a
