@@ -19,8 +19,10 @@ const maxChunkPayload = 1 << 20
 // Header is a parsed WAVE file header, positioned so that the next byte the
 // source yields is the first byte of audio.
 type Header struct {
-	// Info describes the stream. TotalFrames is 0 when the length could not
-	// be determined.
+	// Info describes the stream. Its DataSizeKnown mirrors DataSize below;
+	// TotalFrames is whatever count the header yielded, which is not
+	// necessarily 0 when the length is undeterminable, since a ds64
+	// sampleCount or a fact chunk can supply one where the size did not.
 	Info wav.StreamInfo
 
 	// DataSize is the length of the data chunk in bytes, or -1 when the
@@ -148,6 +150,7 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 		},
 	}
 	h.Info.TotalFrames = resolveFrames(dataSize, int64(fmtChunk.BlockAlign), ds64, haveDS64, factFrames)
+	h.Info.DataSizeKnown = dataSize != sizeUnknown
 	return h, nil
 }
 

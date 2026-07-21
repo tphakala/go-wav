@@ -191,5 +191,8 @@ func (c Config) streamInfo(container wav.Container, frames uint64) wav.StreamInf
 		Extensible:     c.Extensible,
 		ChannelMask:    c.ChannelMask,
 		TotalFrames:    frames,
+		// An encoder is writing the data chunk whose size it states, so the
+		// boundary always exists.
+		DataSizeKnown: true,
 	}
 }

@@ -189,6 +189,13 @@ of the file, trailing bytes after the audio, and chunks in any order. It does
 not tolerate ambiguity about the sample format: a stream it cannot decode is
 reported rather than guessed at.
 
+Because it tolerates those, `StreamInfo.TotalFrames` is a claim the header makes
+and never a count of bytes present: a truncated or interrupted file reports the
+length it was given. `StreamInfo.DataSizeKnown` says whether that claim came
+with a boundary the decoder will bound reads and seeks by, which is what decides
+whether `SeekToFrame` clamps; it does not say the audio is all there. Reading
+until `io.EOF` is the only way to learn that.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

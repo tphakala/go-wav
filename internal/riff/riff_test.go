@@ -600,6 +600,7 @@ func TestRoundTripMatrix(t *testing.T) {
 						Extensible:     wantExtensible,
 						ChannelMask:    wantMask,
 						TotalFrames:    frames,
+						DataSizeKnown:  true,
 					}
 					if h.Info != want {
 						t.Errorf("StreamInfo mismatch\n got %+v\nwant %+v", h.Info, want)
@@ -1052,6 +1053,10 @@ func TestPatchSizesLeavesOriginalLayoutIntact(t *testing.T) {
 // 16-bit stereo at 44100 Hz in a plain RIFF container.
 func stdFmtPayload() []byte { return fmtPayload16(tagPCM, 2, 44100, 16) }
 
+// stdInfo is the StreamInfo the shared fixtures parse to. Every one of them
+// declares a usable data chunk size, so DataSizeKnown is true throughout. The
+// unknown-size cases assert through DataSizeUnknown rather than through a
+// whole-struct comparison, so they need no counterpart here.
 func stdInfo(dataSize int64) wav.StreamInfo {
 	var frames uint64
 	if dataSize > 0 {
@@ -1059,6 +1064,7 @@ func stdInfo(dataSize int64) wav.StreamInfo {
 		frames = uint64(dataSize / 4)
 	}
 	return wav.StreamInfo{
+		DataSizeKnown:  true,
 		SampleRate:     44100,
 		Channels:       2,
 		BitDepth:       16,
