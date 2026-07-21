@@ -42,10 +42,12 @@ Requires Go 1.26 or newer.
   `SourceBitDepth` report what the file holds. Neither law is written, because
   nothing here compands linear samples.
 - **Sample rates and channels**: 384 kHz and eight channels are ordinary, not
-  special cases. The only ceilings are the ones the fmt chunk's own field
-  widths impose: 65535 channels, and a sample rate up to 2147483647, which is
-  where a 32-bit declared rate stops fitting an `int` on a 32-bit platform.
-  Both are read and written to the same limit, so a file this library writes is
+  special cases. Two ceilings apply. The channel count stops at 65535, which is
+  the fmt chunk's own 16-bit field. The sample rate stops at 2147483647, which
+  is not a field width: the field is a 32-bit unsigned integer and reaches
+  4294967295. It is this library's policy, so that the rate is representable as
+  a positive `int` on a 32-bit platform rather than wrapping negative. Both
+  ceilings apply on read and on write alike, so a file this library writes is
   one it can read back.
 - **Validated** bit-exactly in both directions against ffmpeg and sox, across
   every supported depth and format, 8 kHz to 384 kHz, and RF64. Both companding

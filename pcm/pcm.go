@@ -125,7 +125,7 @@ func (c Config) validate(op string) error {
 		return fmt.Errorf("go-wav/pcm: %s: sample rate %d must be positive", op, c.SampleRate)
 	}
 	if int64(c.SampleRate) > int64(riff.MaxSampleRate) {
-		return fmt.Errorf("go-wav/pcm: %s: sample rate %d exceeds the %d a fmt chunk can carry and be read back",
+		return fmt.Errorf("go-wav/pcm: %s: sample rate %d exceeds the %d this package will read back",
 			op, c.SampleRate, riff.MaxSampleRate)
 	}
 	if c.Channels <= 0 {
