@@ -66,6 +66,25 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // credible count is available, including under [WithIgnoreLength]; the length
 // of the returned slice is what actually came back.
 //
+// A widening conversion of a large enough file can be refused outright, when
+// the converted result would be longer than this platform can express as a
+// length. Only a 32-bit build can reach it: the smallest source that does is
+// 512 MiB of 8-bit audio widened to 32-bit, and a narrower widening needs more
+// still, up to the point where the source itself would no longer be an
+// addressable slice. On a 64-bit build the smallest such source is two
+// exabytes, so no file that could trigger it can be held in memory to begin
+// with.
+//
+// That error deliberately wraps no sentinel, so errors.Is will not match it
+// against anything. Every sentinel this package has describes something a
+// caller can respond to, and there is nothing to respond to here: no buffer of
+// the caller's to grow, because this call takes none, and no smaller request
+// to retry, because the size follows from b and the requested width. The
+// remedy is not a different argument but a different API, so the message names
+// the call and the sizes rather than inviting a match. A caller that must
+// handle such files uses [NewDecoder] instead, whose conversion is bounded by
+// a fixed batch and therefore cannot reach this limit at any file size.
+//
 // b must hold the whole stream, because there is no source left to read on
 // from. A partial file therefore decodes as a truncated one: the audio that is
 // present comes back and the shortfall is not reported, which is how
@@ -144,9 +163,8 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	// batch it stages; here the whole file is the batch, and the file's size
 	// is not this package's to choose.
 	if !convertedBytesFit(len(audio)/srcWidth, dstWidth, math.MaxInt) {
-		return wav.StreamInfo{}, nil, fmt.Errorf(
-			"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",
-			len(audio), d.info.SourceBitDepth, d.convert)
+		return wav.StreamInfo{}, nil,
+			errUnrepresentableSize(len(audio), d.info.SourceBitDepth, d.convert)
 	}
 	out := make([]byte, sample.ConvertedLen(len(audio), d.info.SourceBitDepth, d.convert))
 	n, err := sample.Convert(out, audio, d.info.SourceFormat, d.info.SourceBitDepth, d.convert)
@@ -158,6 +176,24 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	// ConvertedLen bytes today, so this trims nothing; it is here so that the
 	// promise holds without depending on that.
 	return d.info, out[:n:n], nil
+}
+
+// errUnrepresentableSize reports a conversion whose result cannot be expressed
+// as a length on this platform.
+//
+// It is a function rather than an inline fmt.Errorf so that the error can be
+// asserted in a test. The branch that raises it needs a source larger than a
+// 64-bit machine can allocate, so it is unreachable from a decode on the
+// platform the tests run on, and the property worth pinning is not that the
+// branch fires but what the error it produces is: an error wrapping nothing.
+// Without a test, the decision to wrap nothing is one line away from being
+// reversed by someone who reads only the sibling refusal in internal/sample.
+//
+// See [DecodeInterleaved] for why it wraps nothing.
+func errUnrepresentableSize(audioLen, srcBits, dstBits int) error {
+	return fmt.Errorf(
+		"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",
+		audioLen, srcBits, dstBits)
 }
 
 // convertedBytesFit reports whether converting the given number of samples into
@@ -177,12 +213,15 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 // because it can name the exported call and the sizes involved, which an error
 // raised from inside the conversion cannot.
 //
-// The two refusals are not interchangeable. Convert wraps io.ErrShortBuffer,
-// which fits a function holding a dst that could in principle have been longer;
-// this one wraps nothing, because DecodeInterleaved takes no destination and
-// there is nothing for a caller to grow. The question does not arise in
-// practice: this check is the strictly earlier of the two, so the one inside
-// the conversion is unreachable from this path.
+// The two refusals are not interchangeable, and the difference is deliberate
+// rather than an oversight. Convert wraps io.ErrShortBuffer, which fits a
+// function holding a dst that could in principle have been longer;
+// [errUnrepresentableSize] wraps nothing, because DecodeInterleaved takes no
+// destination and there is nothing for a caller to grow. Which one a caller
+// sees does not arise in practice, because this check is the strictly earlier
+// of the two, so the one inside the conversion is unreachable from this path;
+// both halves are pinned by tests so that neither the precedence nor the
+// sentinel choice can drift.
 func convertedBytesFit(samples, dstWidth, limit int) bool {
 	if samples <= 0 || dstWidth <= 0 {
 		return true

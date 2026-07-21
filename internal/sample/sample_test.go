@@ -781,3 +781,50 @@ func FuzzConvert(f *testing.F) {
 		}
 	})
 }
+
+// TestConvertRefusalsAreDistinguishable exercises the recipe Convert's doc
+// hands a caller for telling its two io.ErrShortBuffer refusals apart, since
+// errors.Is cannot: check whether ConvertedLen reports 0 for a source that
+// holds at least one whole sample, which is true only of the unrepresentable
+// one.
+//
+// The recipe is a documented instruction, so it is a contract like any other.
+// Nothing exercised it, which left the doc free to describe a discrimination
+// that did not work.
+func TestConvertRefusalsAreDistinguishable(t *testing.T) {
+	t.Parallel()
+
+	const srcBits, dstBits = 24, 32
+	srcWidth := bytesPerSample(srcBits)
+
+	cases := []struct {
+		name string
+		// srcLen and dstLen describe the call; unrepresentable says which of
+		// the two refusals it should be.
+		srcLen, dstLen  int
+		unrepresentable bool
+	}{
+		{"destination merely too short", 3 * 4, 0, false},
+		{"destination unrepresentable", math.MaxInt, math.MaxInt, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := convertPlan(tc.srcLen, tc.dstLen, wav.SampleFormatPCM, srcBits, dstBits)
+			if !errors.Is(err, io.ErrShortBuffer) {
+				t.Fatalf("convertPlan = %v, want an error wrapping io.ErrShortBuffer", err)
+			}
+
+			// The recipe, applied exactly as the doc states it.
+			holdsAWholeSample := tc.srcLen >= srcWidth
+			got := holdsAWholeSample && ConvertedLen(tc.srcLen, srcBits, dstBits) == 0
+			if got != tc.unrepresentable {
+				t.Errorf("the documented recipe reports unrepresentable=%v, want %v: "+
+					"a caller following Convert's doc would misclassify this refusal",
+					got, tc.unrepresentable)
+			}
+		})
+	}
+}
