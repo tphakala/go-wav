@@ -152,7 +152,9 @@ func TestWriterRefusesWhatReaderRefuses(t *testing.T) {
 
 	for _, rate := range []int64{48000, int64(MaxSampleRate), int64(MaxSampleRate) + 1, math.MaxUint32} {
 		// A rate past the ceiling is not expressible as an int at all on a
-		// 32-bit target, so there it cannot even be asked for.
+		// 32-bit target, so there it cannot even be asked for. The two
+		// refusal cases therefore run only on a 64-bit target, and this
+		// test's passing under GOARCH=386 is not evidence the bound exists.
 		if int64(int(rate)) != rate {
 			continue
 		}

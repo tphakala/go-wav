@@ -56,6 +56,11 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: Download dependencies
+        run: go mod download
+
+      # No -race: the race detector has no 32-bit x86 support. The 64-bit
+      # test job above covers that.
       - name: Run tests
         env:
           GOARCH: '386'
@@ -106,6 +111,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         # Enumerated rather than crossed, because the cross product includes
         # combinations Go does not support (darwin/386, darwin/arm).

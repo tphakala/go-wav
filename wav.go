@@ -127,9 +127,9 @@ type StreamInfo struct {
 	// produces.
 	//
 	// The promise is only as good as its source. A Decoder whose Reset failed
-	// reports the zero value here, and a StreamInfo a caller builds by hand
-	// can hold anything at all, which is why Duration guards the field rather
-	// than trusting it.
+	// is invalidated, so it reports the zero value here rather than what it
+	// held before, and a StreamInfo a caller builds by hand can hold anything
+	// at all, which is why Duration guards the field rather than trusting it.
 	//
 	// It remains a number the file declared. Nothing checks it against the
 	// audio, so a rate that passes is still a claim, and code sizing a buffer

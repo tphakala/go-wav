@@ -57,6 +57,11 @@ func (m RF64Mode) String() string {
 type Config struct {
 	// SampleRate is the number of samples per second per channel, for
 	// example 48000. Required; there is no zero default.
+	//
+	// It stops at 2147483647, which the reader will not accept above and so
+	// the encoder will not write above; see riff.MaxSampleRate. The fmt
+	// chunk's derived byte rate binds sooner for anything but 8-bit mono,
+	// since it must fit 32 bits alongside the frame width.
 	SampleRate int
 
 	// BitDepth is the storage width of one sample in bits: 8, 16, 24 or 32

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	wav "github.com/tphakala/go-wav"
+	"github.com/tphakala/go-wav/internal/riff"
 	pcm "github.com/tphakala/go-wav/pcm"
 )
 
@@ -761,27 +762,44 @@ func assertDecodes(tb testing.TB, b []byte, cfg pcm.Config, want []byte) {
 func TestEncoderRefusesRatesTheDecoderRefuses(t *testing.T) {
 	t.Parallel()
 
-	const ceiling = int64(math.MaxInt32)
+	ceiling := int64(riff.MaxSampleRate)
 	for _, rate := range []int64{48000, ceiling, ceiling + 1, math.MaxUint32} {
 		// A rate past the ceiling is not expressible as an int on a 32-bit
-		// target, so there it cannot be asked for at all.
+		// target, so there it cannot be asked for at all. That means the two
+		// refusal cases below run only on a 64-bit target, and this test's
+		// passing under GOARCH=386 is not evidence the bound exists.
 		if int64(int(rate)) != rate {
 			continue
 		}
 		cfg := pcm.Config{SampleRate: int(rate), BitDepth: 8, Channels: 1}
 
-		var buf bytes.Buffer
-		err := pcm.EncodeInterleaved(&buf, cfg, []byte{1, 2, 3, 4})
+		// NewEncoder rather than EncodeInterleaved, so the refusal is pinned
+		// to Config.validate. The container layer bounds the rate too, and a
+		// test that only checked "some error" would stay green with the
+		// Config check deleted.
+		_, err := pcm.NewEncoder(&memSeeker{}, cfg)
 		if rate > ceiling {
 			if err == nil {
-				t.Errorf("rate %d: encoder wrote a file the decoder refuses", rate)
+				t.Errorf("rate %d: NewEncoder accepted a rate the decoder refuses", rate)
+				continue
+			}
+			// The container layer names itself in its own message, so its
+			// absence is what says Config.validate answered first.
+			if strings.Contains(err.Error(), "internal/riff") {
+				t.Errorf("rate %d: refused by the container layer, not by Config.validate: %v", rate, err)
 			}
 			continue
 		}
 		if err != nil {
-			t.Fatalf("rate %d: encoder refused a rate the decoder accepts: %v", rate, err)
+			t.Fatalf("rate %d: NewEncoder refused a rate the decoder accepts: %v", rate, err)
 		}
 
+		// And the whole round trip, so the two ceilings are known to agree
+		// rather than merely both existing.
+		var buf bytes.Buffer
+		if eerr := pcm.EncodeInterleaved(&buf, cfg, []byte{1, 2, 3, 4}); eerr != nil {
+			t.Fatalf("rate %d: EncodeInterleaved: %v", rate, eerr)
+		}
 		info, _, derr := pcm.DecodeInterleaved(buf.Bytes())
 		if derr != nil {
 			t.Fatalf("rate %d: encoder wrote a file the decoder refuses: %v", rate, derr)

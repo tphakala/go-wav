@@ -44,8 +44,8 @@
 // its 16-bit fields land in an int on any platform. The sample rate is 32 bits
 // and does not, so it is checked before it is narrowed and a declaration above
 // [MaxSampleRate] is refused rather than wrapped into a negative rate. The
-// writer applies the same ceiling, so a header this package emits is always
-// one it can read back.
+// writer applies that same ceiling, so the rate in a header this package emits
+// is always one it will read back.
 //
 // # Tolerance
 //

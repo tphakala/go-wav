@@ -108,3 +108,65 @@ func TestEncoderNilLayoutNoPanic(t *testing.T) {
 		t.Errorf("the rejected encoder wrote %d bytes to the previous sink", good.Len()-before)
 	}
 }
+
+// TestFailedResetInvalidatesTheDecoder pins that every way Reset can fail
+// leaves the decoder unusable rather than still bound to the stream it held
+// before.
+//
+// It matters most on the pooling path, where a caller legitimately holds a
+// *Decoder across a Reset. Two of the three failure paths used to return
+// before touching the decoder, so a caller who checked the error and moved on
+// would find Info still describing the previous file and Read still handing
+// back its audio, silently mixing two streams with nothing reporting it.
+func TestFailedResetInvalidatesTheDecoder(t *testing.T) {
+	t.Parallel()
+
+	cfg := pcm.Config{SampleRate: 44100, BitDepth: 16, Channels: 1}
+	good := encodeFixture(t, cfg, pattern(64))
+
+	cases := []struct {
+		name  string
+		reset func(d *pcm.Decoder) error
+	}{
+		{"nil reader", func(d *pcm.Decoder) error {
+			return d.Reset(nil)
+		}},
+		{"unusable conversion width", func(d *pcm.Decoder) error {
+			return d.Reset(bytes.NewReader(good), pcm.WithConvertTo(7))
+		}},
+		{"unparseable stream", func(d *pcm.Decoder) error {
+			return d.Reset(bytes.NewReader([]byte("not a wav file at all")))
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, err := pcm.NewDecoder(bytes.NewReader(good))
+			if err != nil {
+				t.Fatalf("NewDecoder: %v", err)
+			}
+			if got := d.Info().SampleRate; got != cfg.SampleRate {
+				t.Fatalf("before Reset, SampleRate = %d, want %d", got, cfg.SampleRate)
+			}
+
+			if err := tc.reset(d); err == nil {
+				t.Fatal("Reset reported no error")
+			}
+
+			if got := d.Info().SampleRate; got != 0 {
+				t.Errorf("after a failed Reset, Info reports SampleRate %d, want 0: "+
+					"the decoder still describes the stream it held before", got)
+			}
+			n, rerr := d.Read(make([]byte, 16))
+			if rerr == nil {
+				t.Errorf("after a failed Reset, Read returned %d bytes and no error: "+
+					"the decoder is still serving the previous stream", n)
+			}
+			if n != 0 {
+				t.Errorf("after a failed Reset, Read returned %d bytes, want 0", n)
+			}
+		})
+	}
+}
