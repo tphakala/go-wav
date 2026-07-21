@@ -41,8 +41,20 @@ Requires Go 1.26 or newer.
   to linear 16-bit PCM rather than handed back as stored; `SourceFormat` and
   `SourceBitDepth` report what the file holds. Neither law is written, because
   nothing here compands linear samples.
-- **Sample rates and channels**: unrestricted. 384 kHz and eight channels are
-  ordinary, not special cases.
+- **Sample rates and channels**: 384 kHz and eight channels are ordinary, not
+  special cases, and nothing in between is. The outer limits are the fmt
+  chunk's: 65535 channels, from its 16-bit field, and a sample rate of
+  2147483647. That second number is not a field width, since the field is a
+  32-bit unsigned integer reaching 4294967295; it is this library's policy, so
+  the rate stays a positive `int` on a 32-bit platform instead of wrapping
+  negative. It applies on read and on write alike, so a file this library
+  writes is one it can read back.
+
+  The two outer limits are not reachable at the same time, because the fmt
+  chunk also derives a 16-bit block alignment and a 32-bit byte rate from them:
+  65535 channels needs 8-bit samples and a rate no higher than 65535. The
+  encoder reports which derived field a configuration overflows rather than
+  writing a header it knows is wrong.
 - **Validated** bit-exactly in both directions against ffmpeg and sox, across
   every supported depth and format, 8 kHz to 384 kHz, and RF64. Both companding
   laws are checked against both tools over all 256 codes.

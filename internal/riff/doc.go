@@ -40,6 +40,13 @@
 // guarded and reports [github.com/tphakala/go-wav.ErrTooLarge] rather than
 // wrapping.
 //
+// The fmt chunk's own fields are the exception, being small by construction:
+// its 16-bit fields land in an int on any platform. The sample rate is 32 bits
+// and does not, so it is checked before it is narrowed and a declaration above
+// [MaxSampleRate] is refused rather than wrapped into a negative rate. The
+// writer applies that same ceiling, so the rate in a header this package emits
+// is always one it will read back.
+//
 // # Tolerance
 //
 // Real WAV files violate the specification constantly, so the reader accepts a
@@ -48,10 +55,19 @@
 // order before fmt and data, and unknown chunks anywhere. A declared frame
 // count above the ceiling the reader will believe, or a fact chunk holding the
 // supersession sentinel, is reported as unknown rather than repeated to the
-// caller. It does not guess a sample format: a stream it cannot decode is
-// reported, never reinterpreted,
-// and a fmt chunk naming A-law or mu-law at a width other than the 8 bits
-// G.711 defines is refused rather than read as though the depth field were the
+// caller. Two fmt fields get a milder form of the same latitude: a declared
+// nBlockAlign that disagrees with the channel count and sample width is
+// replaced by the derived value, and a ValidBits wider than its container is
+// reported as absent.
+//
+// The fields that describe what the samples ARE get none, because a stream
+// whose shape is unreadable cannot be decoded at all: zero channels, a zero
+// sample rate, and a rate above [MaxSampleRate] are each refused outright
+// rather than reported as unknown, since none of them has a way to say
+// "unknown" that a caller could act on. It does not guess a sample format
+// either: a stream it cannot decode is reported, never reinterpreted, and a
+// fmt chunk naming A-law or mu-law at a width other than the 8 bits G.711
+// defines is refused rather than read as though the depth field were the
 // mistake.
 //
 // The two companding laws are parsed but, like BW64, never written:

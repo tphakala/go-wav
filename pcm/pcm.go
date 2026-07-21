@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	wav "github.com/tphakala/go-wav"
+	"github.com/tphakala/go-wav/internal/riff"
 )
 
 // RF64Mode selects how an [Encoder] handles the 4 GiB limit of the 32-bit RIFF
@@ -56,6 +57,11 @@ func (m RF64Mode) String() string {
 type Config struct {
 	// SampleRate is the number of samples per second per channel, for
 	// example 48000. Required; there is no zero default.
+	//
+	// It stops at 2147483647, which the reader will not accept above and so
+	// the encoder will not write above; see riff.MaxSampleRate. The fmt
+	// chunk's derived byte rate binds sooner for anything but 8-bit mono,
+	// since it must fit 32 bits alongside the frame width.
 	SampleRate int
 
 	// BitDepth is the storage width of one sample in bits: 8, 16, 24 or 32
@@ -122,6 +128,10 @@ func (c Config) bytesPerFrame() int64 {
 func (c Config) validate(op string) error {
 	if c.SampleRate <= 0 {
 		return fmt.Errorf("go-wav/pcm: %s: sample rate %d must be positive", op, c.SampleRate)
+	}
+	if int64(c.SampleRate) > int64(riff.MaxSampleRate) {
+		return fmt.Errorf("go-wav/pcm: %s: sample rate %d exceeds the %d this package will read back",
+			op, c.SampleRate, riff.MaxSampleRate)
 	}
 	if c.Channels <= 0 {
 		return fmt.Errorf("go-wav/pcm: %s: channel count %d must be positive", op, c.Channels)

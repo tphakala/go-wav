@@ -40,6 +40,32 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+  # A 32-bit target is where a declared size or count that fits a uint32 stops
+  # fitting an int, which is the only place several of this package's bounds
+  # are observable at all. linux/386 runs natively on the amd64 runner, so the
+  # tests actually execute rather than merely compiling.
+  test-32bit:
+    name: Test (32-bit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Download dependencies
+        run: go mod download
+
+      # No -race: the race detector has no 32-bit x86 support. The 64-bit
+      # test job above covers that.
+      - name: Run tests
+        env:
+          GOARCH: '386'
+        run: go test ./...
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -63,7 +89,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        goarch: [amd64, arm64]
+        # 386 and arm are 32-bit, where an int is 32 bits and the narrowing
+        # bounds this package applies to declared sizes, counts and rates
+        # become load-bearing rather than theoretical.
+        goarch: [amd64, arm64, '386', arm]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -82,9 +111,20 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
+        # Enumerated rather than crossed, because the cross product includes
+        # combinations Go does not support (darwin/386, darwin/arm).
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: linux, goarch: '386'}
+          - {goos: linux, goarch: arm}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: windows, goarch: amd64}
+          - {goos: windows, goarch: arm64}
+          - {goos: windows, goarch: '386'}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

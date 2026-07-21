@@ -114,6 +114,28 @@ func (f SampleFormat) Companded() bool {
 // writing. It mirrors flac.StreamInfo in the sibling go-flac library.
 type StreamInfo struct {
 	// SampleRate is the number of samples per second per channel.
+	//
+	// Read back from a decoder that opened successfully it is always positive,
+	// and an encoder fills it from a Config that must already be positive.
+	//
+	// The fmt chunk stores the rate in 32 bits, so a file may declare one up
+	// to 4294967295. An int holds every such value on a 64-bit platform and
+	// only those up to math.MaxInt32 on a 32-bit one, where the rest wrap
+	// negative. The reader therefore refuses a declaration above math.MaxInt32
+	// on every platform, rather than accepting a value whose sign would depend
+	// on the machine, and the encoder refuses the same range so this package
+	// never writes a rate it will not read. The ceiling is that representation
+	// limit rather than a judgement about what a plausible rate is: it sits
+	// far above anything recording or radio-capture hardware produces.
+	//
+	// The promise is only as good as its source. A Decoder whose Reset failed
+	// is invalidated, so it reports the zero value here rather than what it
+	// held before, and a StreamInfo a caller builds by hand can hold anything
+	// at all, which is why Duration guards the field rather than trusting it.
+	//
+	// It remains a number the file declared. Nothing checks it against the
+	// audio, so a rate that passes is still a claim, and code sizing a buffer
+	// from it is sizing a buffer from something a file said.
 	SampleRate int
 
 	// Channels is the interleaved channel count.

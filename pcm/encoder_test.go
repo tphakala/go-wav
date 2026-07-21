@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"testing"
 
 	wav "github.com/tphakala/go-wav"
+	"github.com/tphakala/go-wav/internal/riff"
 	pcm "github.com/tphakala/go-wav/pcm"
 )
 
@@ -744,5 +746,66 @@ func assertDecodes(tb testing.TB, b []byte, cfg pcm.Config, want []byte) {
 	}
 	if !bytes.Equal(got, want) {
 		tb.Errorf("payload: got %d bytes want %d", len(got), len(want))
+	}
+}
+
+// TestEncoderRefusesRatesTheDecoderRefuses pins the two halves of the sample
+// rate ceiling together at the level a caller sees them. The reader bounds a
+// declared rate so that StreamInfo.SampleRate can promise to be positive on a
+// 32-bit target; without the matching bound here the encoder would happily
+// write a file this package then refuses to read.
+//
+// Eight-bit mono is the geometry that reaches the gap: a frame is one byte, so
+// the fmt chunk's derived byte rate equals the sample rate and does not
+// overflow its own 32-bit field before the rate overflows the ceiling. At any
+// wider frame the byte rate overflows first and hides the problem.
+func TestEncoderRefusesRatesTheDecoderRefuses(t *testing.T) {
+	t.Parallel()
+
+	ceiling := int64(riff.MaxSampleRate)
+	for _, rate := range []int64{48000, ceiling, ceiling + 1, math.MaxUint32} {
+		// A rate past the ceiling is not expressible as an int on a 32-bit
+		// target, so there it cannot be asked for at all. That means the two
+		// refusal cases below run only on a 64-bit target, and this test's
+		// passing under GOARCH=386 is not evidence the bound exists.
+		if int64(int(rate)) != rate {
+			continue
+		}
+		cfg := pcm.Config{SampleRate: int(rate), BitDepth: 8, Channels: 1}
+
+		// NewEncoder rather than EncodeInterleaved, so the refusal is pinned
+		// to Config.validate. The container layer bounds the rate too, and a
+		// test that only checked "some error" would stay green with the
+		// Config check deleted.
+		_, err := pcm.NewEncoder(&memSeeker{}, cfg)
+		if rate > ceiling {
+			if err == nil {
+				t.Errorf("rate %d: NewEncoder accepted a rate the decoder refuses", rate)
+				continue
+			}
+			// The container layer names itself in its own message, so its
+			// absence is what says Config.validate answered first.
+			if strings.Contains(err.Error(), "internal/riff") {
+				t.Errorf("rate %d: refused by the container layer, not by Config.validate: %v", rate, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("rate %d: NewEncoder refused a rate the decoder accepts: %v", rate, err)
+		}
+
+		// And the whole round trip, so the two ceilings are known to agree
+		// rather than merely both existing.
+		var buf bytes.Buffer
+		if eerr := pcm.EncodeInterleaved(&buf, cfg, []byte{1, 2, 3, 4}); eerr != nil {
+			t.Fatalf("rate %d: EncodeInterleaved: %v", rate, eerr)
+		}
+		info, _, derr := pcm.DecodeInterleaved(buf.Bytes())
+		if derr != nil {
+			t.Fatalf("rate %d: encoder wrote a file the decoder refuses: %v", rate, derr)
+		}
+		if int64(info.SampleRate) != rate {
+			t.Errorf("rate %d round tripped as %d", rate, info.SampleRate)
+		}
 	}
 }

@@ -14,9 +14,12 @@ var (
 
 	// ErrCorruptStream reports a malformed stream: a chunk header that runs
 	// past the end of its parent, a fmt chunk shorter than 16 bytes, a
-	// missing fmt or data chunk, or an RF64 stream with no ds64 chunk. It is
-	// reserved for damage the reader cannot work around; the tolerated
-	// real-world deviations documented on the decoder do not produce it.
+	// missing fmt or data chunk, or an RF64 stream with no ds64 chunk. It
+	// also covers a fmt chunk that parses but describes no stream that could
+	// exist, which is zero channels, a zero sample rate, or a sample rate too
+	// large to hold as a positive int on every platform. It is reserved for
+	// damage the reader cannot work around; the tolerated real-world
+	// deviations documented on the decoder do not produce it.
 	ErrCorruptStream = errors.New("go-wav: corrupt stream")
 
 	// ErrUnsupported reports a well-formed stream this package will not

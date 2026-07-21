@@ -2628,6 +2628,25 @@ func FuzzParseHeader(f *testing.F) {
 		chunk(idFmt, fmtPayload18(tagIEEEFloat, 1, 48000, 32)),
 		chunk(idData, make([]byte, 7)),
 	))
+	// A declared sample rate at each side of MaxSampleRate. The loop below
+	// asserts SampleRate is positive on any header that parses, which is the
+	// invariant the ceiling exists to give; without a seed near it, reaching
+	// the boundary would depend on mutation stumbling onto those four bytes.
+	f.Add(cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunk(idFmt, fmtPayloadRate(MaxSampleRate)),
+		chunk(idData, make([]byte, 8)),
+	))
+	f.Add(cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunk(idFmt, fmtPayloadRate(MaxSampleRate+1)),
+		chunk(idData, make([]byte, 8)),
+	))
+	f.Add(cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunk(idFmt, fmtPayloadRate(math.MaxUint32)),
+		chunk(idData, make([]byte, 8)),
+	))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		h, err := ParseHeader(bufio.NewReader(bytes.NewReader(data)))

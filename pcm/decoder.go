@@ -195,8 +195,26 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 }
 
 func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
+	// A failed Reset must not leave a pooled decoder usable against a stale
+	// stream, so every failure below goes through this rather than returning
+	// straight out. Two of them used to: a nil reader and an unusable
+	// WithConvertTo both returned before touching d, so Info kept describing
+	// the previous file and Read kept serving its audio, with no error to say
+	// so. Funnelling the invalidation through one place is what stops the
+	// next failure path added here from forgetting it.
+	//
+	// The buffered reader is carried across because it is the expensive part
+	// and the next Reset rebinds it; whatever it still holds of the old
+	// stream is discarded by that rebind.
+	fail := func(err error) error {
+		br := d.br
+		*d = Decoder{br: br}
+		d.err = err
+		return err
+	}
+
 	if r == nil {
-		return fmt.Errorf("go-wav/pcm: %s: %w", op, errNilReader)
+		return fail(fmt.Errorf("go-wav/pcm: %s: %w", op, errNilReader))
 	}
 
 	var cfg config
@@ -207,7 +225,7 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 	}
 	if cfg.convertSet {
 		if err := sample.Validate(wav.SampleFormatPCM, cfg.convertTo); err != nil {
-			return fmt.Errorf("go-wav/pcm: %s: WithConvertTo: %w", op, err)
+			return fail(fmt.Errorf("go-wav/pcm: %s: WithConvertTo: %w", op, err))
 		}
 	}
 
@@ -220,11 +238,8 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 
 	hdr, err := riff.ParseHeader(br)
 	if err != nil {
-		// A failed Reset must not leave a pooled decoder usable against a
-		// stale stream.
-		*d = Decoder{br: br}
-		d.err = err
-		return err
+		d.br = br
+		return fail(err)
 	}
 
 	// The parser stopped on the first audio byte, so this is the one moment
