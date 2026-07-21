@@ -1,12 +1,15 @@
 package pcm_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
 	"maps"
 	"slices"
 	"testing"
+
+	pcm "github.com/tphakala/go-wav/pcm"
 )
 
 // headKeep is how many leading bytes the counting sinks retain. It must cover
@@ -193,3 +196,27 @@ func (n nonSeekReader) Read(p []byte) (int, error) { return n.r.Read(p) }
 type nonSeekWriter struct{ w io.Writer }
 
 func (n nonSeekWriter) Write(p []byte) (int, error) { return n.w.Write(p) }
+
+// drainInto reads a converted stream to EOF through a fixed buffer size.
+func drainInto(tb testing.TB, file []byte, convert, bufSize int) []byte {
+	tb.Helper()
+	d, err := pcm.NewDecoder(bytes.NewReader(file), pcm.WithConvertTo(convert))
+	if err != nil {
+		tb.Fatalf("NewDecoder: %v", err)
+	}
+	buf := make([]byte, bufSize)
+	var out []byte
+	for {
+		n, err := d.Read(buf)
+		out = append(out, buf[:n]...)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return out
+			}
+			tb.Fatalf("Read: %v", err)
+		}
+		if n == 0 {
+			tb.Fatal("Read made no progress and reported no error")
+		}
+	}
+}

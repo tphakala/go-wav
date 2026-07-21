@@ -44,7 +44,13 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // also covers an A-law or mu-law file decoded with no option at all: a
 // companded byte is expanded to linear 16-bit PCM whether or not a conversion
 // was asked for, so the result is about twice the stored audio and could not
-// be a window onto it. The options alone therefore do not tell a caller which
+// be a window onto it.
+//
+// That buffer is proportional to b and can be larger than it, by at most four
+// times, which is 8-bit audio widened to 32-bit. Unlike [Decoder], which
+// streams through a bounded batch, this holds the whole result at once, so a
+// caller deciding how much to read into b is also deciding the peak
+// allocation. The options alone therefore do not tell a caller which
 // case it is in. Code that writes through the returned slice to edit its own
 // buffer, or that counts on there being no allocation, has to rule the
 // expansion out rather than infer it from the absence of an option:
@@ -133,8 +139,10 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 			"go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}
 	// Widening a whole file in one call is the only place this package asks
-	// for a buffer whose length may not be expressible: a streaming converter
-	// never holds more than one batch, so it can never get near the limit.
+	// for a buffer whose length may not be expressible. The streaming
+	// converter cannot reach the limit because maxConvertBatch bounds every
+	// batch it stages; here the whole file is the batch, and the file's size
+	// is not this package's to choose.
 	if !convertedBytesFit(len(audio)/srcWidth, dstWidth, math.MaxInt) {
 		return wav.StreamInfo{}, nil, fmt.Errorf(
 			"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",

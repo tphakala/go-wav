@@ -41,7 +41,42 @@ const streamBufferSize = 64 << 10
 // writeToBufferSize is the staging buffer WriteTo streams through. It is
 // independent of readBufferSize because here a larger block genuinely does
 // reduce the number of round trips.
+//
+// That holds for a pass-through stream, which fills it. A converting stream is
+// bounded by maxConvertBatch instead, so a narrowing conversion hands the sink
+// less than this per call and a larger buffer here would not change that; see
+// maxConvertBatch.
 const writeToBufferSize = 64 << 10
+
+// maxConvertBatch bounds the source bytes a converting Read stages at once.
+//
+// It exists because the batch is otherwise sized from the caller's buffer, and
+// that buffer is the caller's to choose. Without a cap, asking for a whole
+// clip in one Read makes the decoder allocate srcWidth/dstWidth times that
+// buffer to stage the source for it, which for a float64 file converted to
+// 8-bit is eight times the amount the caller thought they were asking for. A
+// cap turns that amplification into a short read, which io.Reader permits.
+//
+// The cap is also what makes the batch arithmetic safe. samples*srcWidth is a
+// native int multiplication of a caller-controlled length, so on a 32-bit
+// target a large enough buffer used to wrap it: negative, which panicked
+// slicing the staging buffer, or exactly zero, which reported a clean end of
+// stream partway through a file. Bounding the sample count by a constant
+// before the multiplication holds the product at or below this value on every
+// platform, so neither is reachable.
+//
+// What a caller sees is that a converting Read yields at most
+// maxConvertBatch/srcWidth*dstWidth bytes however large a buffer it passes.
+// The bound is on the SOURCE, so a narrowing conversion is served least per
+// call: a float64 file read as 8-bit gets 8 KiB per Read, and the cap starts
+// to bind at a buffer of 8193 bytes. A widening conversion is served more,
+// which is also what bounds the converted staging buffer at four times this
+// value, the widest ratio the package supports being 8-bit to 32-bit.
+//
+// It is defined as streamBufferSize rather than restating the number, so that
+// one batch stays one read of the buffered reader underneath if that window
+// ever moves.
+const maxConvertBatch = streamBufferSize
 
 // config holds decoder options. It is unexported, which makes Option opaque to
 // callers, matching go-aac.
@@ -283,7 +318,19 @@ func (d *Decoder) lengthKnown() bool {
 // disagree.
 func (d *Decoder) Info() wav.StreamInfo { return d.info }
 
-// Read fills p with interleaved samples.
+// Read reads interleaved samples into p and returns how many bytes it wrote.
+//
+// It is an ordinary io.Reader and returns short reads. Without a conversion a
+// short read is whatever the source gave, since the source is read once per
+// call and need not fill p. Under [WithConvertTo] the decoder bounds itself as
+// well: it converts one staged batch per call, so once p is larger than that
+// batch yields, the returned count stops growing with it. A float64 source
+// read as 8-bit is served 8 KiB per call for any p of 8193 bytes or more, and
+// fills a smaller p as before.
+//
+// A short read is not the end of the stream, which is reported as io.EOF.
+// Callers must loop, or hand the decoder to io.Copy, io.ReadAll or
+// io.ReadFull.
 //
 // By default the bytes are those stored in the file, with the single exception
 // below. That means the encoding varies with the source, and in particular that
@@ -350,6 +397,55 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 	return n, nil
 }
 
+// convertBatchLen returns the number of source bytes a converting read should
+// stage for a caller buffer of bufLen bytes, given the stored and requested
+// sample widths and how many bytes of the data chunk are left. A negative
+// remaining means the length is unknown, so only the buffer and the cap bound
+// the batch.
+//
+// It takes lengths rather than slices so that the buffer sizes that used to
+// wrap the batch arithmetic can be pinned in a test without allocating them.
+// A zero result means there is no whole sample left to stage, which the caller
+// reports as the end of the stream, or that a width was not positive, which
+// the caller has already rejected before it gets here.
+func convertBatchLen(bufLen, srcWidth, dstWidth int, remaining int64) int {
+	// The caller checks both widths first and reports a corrupt stream, so
+	// this is unreachable through it. It is kept because the division below
+	// would panic without it, and because this function is entered directly
+	// from its test; it deliberately does not try to report the difference,
+	// since the caller owns that error and states it better.
+	if srcWidth <= 0 || dstWidth <= 0 {
+		return 0
+	}
+
+	// Enough samples to fill the caller's buffer, never fewer than one so a
+	// buffer smaller than a single converted sample still makes progress, and
+	// never more than the batch cap. Bounding the count by division before
+	// the multiplication is what keeps the product from wrapping; see
+	// maxConvertBatch.
+	//
+	// The floor on the cap itself cannot bind for any width this package
+	// supports, since the widest sample is 8 bytes and the cap is 64 KiB. It
+	// guards the case where the quotient is 0, which is what a sample wider
+	// than the whole batch would give, so that the batch is never empty for a
+	// reason the caller would read as end of stream.
+	samples := max(bufLen/dstWidth, 1)
+	samples = min(samples, max(maxConvertBatch/srcWidth, 1))
+	want := samples * srcWidth
+
+	// Past the end of the data chunk the chunk's own length is the smaller
+	// bound, and a trailing fragment shorter than one stored sample is
+	// dropped because nothing can be converted from it. Narrowing remaining
+	// to an int is safe here because this branch is only reached when it is
+	// below want, which the cap has already put well inside an int on every
+	// platform.
+	if remaining >= 0 && remaining < int64(want) {
+		want = int(remaining)
+		want -= want % srcWidth
+	}
+	return want
+}
+
 // readConverted reads whole source samples and converts them into p.
 func (d *Decoder) readConverted(p []byte) (int, error) {
 	// Serve whatever the previous conversion left over. Staging the output
@@ -376,14 +472,7 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 		return 0, fmt.Errorf("go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}
 
-	// Convert a batch large enough to fill p, and never fewer than one
-	// sample, so that a tiny p still makes progress.
-	samples := max(len(p)/dstWidth, 1)
-	want := samples * srcWidth
-	if d.remaining > 0 && int64(want) > d.remaining {
-		want = int(d.remaining)
-		want -= want % srcWidth
-	}
+	want := convertBatchLen(len(p), srcWidth, dstWidth, d.remaining)
 	if want == 0 {
 		d.remaining = 0
 		return 0, io.EOF
