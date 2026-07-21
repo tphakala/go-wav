@@ -116,15 +116,17 @@ type StreamInfo struct {
 	// SampleRate is the number of samples per second per channel.
 	//
 	// Read back from a decoder that opened successfully it is always positive,
-	// and an encoder fills it from a Config that must already be positive. The
-	// fmt chunk stores it in 32 bits, and the reader refuses a declaration
-	// above math.MaxInt32 rather than narrowing it into an int that cannot
-	// hold it, which on a 32-bit platform would hand back a negative rate for
-	// anything past that point. The encoder refuses the same range, so this
-	// package never writes a rate it will not read. The ceiling is a
-	// representation limit rather than a judgement about what a plausible rate
-	// is: it sits far above anything recording or radio-capture hardware
-	// produces.
+	// and an encoder fills it from a Config that must already be positive.
+	//
+	// The fmt chunk stores the rate in 32 bits, so a file may declare one up
+	// to 4294967295. An int holds every such value on a 64-bit platform and
+	// only those up to math.MaxInt32 on a 32-bit one, where the rest wrap
+	// negative. The reader therefore refuses a declaration above math.MaxInt32
+	// on every platform, rather than accepting a value whose sign would depend
+	// on the machine, and the encoder refuses the same range so this package
+	// never writes a rate it will not read. The ceiling is that representation
+	// limit rather than a judgement about what a plausible rate is: it sits
+	// far above anything recording or radio-capture hardware produces.
 	//
 	// The promise is only as good as its source. A Decoder whose Reset failed
 	// is invalidated, so it reports the zero value here rather than what it
