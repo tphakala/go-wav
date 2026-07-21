@@ -112,9 +112,12 @@ func parseFmt(b []byte) (Format, error) {
 	// being guarded against.
 	rate := binary.LittleEndian.Uint32(b[4:8])
 
-	// Zero channels or a zero sample rate appear in genuinely damaged files
-	// and would divide by zero in every size computation downstream, so they
-	// are rejected here rather than tolerated.
+	// Zero channels or a zero sample rate appear in genuinely damaged files.
+	// A zero channel count would divide by zero in the frame arithmetic; a
+	// zero rate would not, since the one place that divides by it guards
+	// itself, but it describes no stream a caller could play or measure and
+	// there is no way to hand it back that says so. Both are refused here
+	// rather than tolerated.
 	if f.Channels == 0 {
 		return Format{}, fmt.Errorf("go-wav/internal/riff: %w: fmt chunk declares zero channels",
 			wav.ErrCorruptStream)
@@ -124,11 +127,11 @@ func parseFmt(b []byte) (Format, error) {
 			wav.ErrCorruptStream)
 	}
 	// A rate above the ceiling cannot be held as a positive int everywhere, so
-	// it is refused rather than passed on as a negative one; see maxSampleRate.
-	if rate > maxSampleRate {
+	// it is refused rather than passed on as a negative one; see MaxSampleRate.
+	if rate > MaxSampleRate {
 		return Format{}, fmt.Errorf(
 			"go-wav/internal/riff: %w: fmt chunk declares a sample rate of %d, above the %d this reader accepts",
-			wav.ErrCorruptStream, rate, maxSampleRate)
+			wav.ErrCorruptStream, rate, MaxSampleRate)
 	}
 	f.SampleRate = int(rate)
 

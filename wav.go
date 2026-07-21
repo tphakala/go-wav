@@ -115,14 +115,21 @@ func (f SampleFormat) Companded() bool {
 type StreamInfo struct {
 	// SampleRate is the number of samples per second per channel.
 	//
-	// Read back from a decoder it is always positive. The fmt chunk stores it
-	// in 32 bits, and the reader refuses a declaration above math.MaxInt32
-	// rather than narrowing it into an int that cannot hold it, which on a
-	// 32-bit platform would hand back a negative rate for anything past that
-	// point. The ceiling is a representation limit and not a judgement about
-	// what a plausible rate is: it sits far above the 768 kHz the fastest
-	// recorders offer, and above the tens of megahertz radio captures stored
-	// in this container use.
+	// Read back from a decoder that opened successfully it is always positive,
+	// and an encoder fills it from a Config that must already be positive. The
+	// fmt chunk stores it in 32 bits, and the reader refuses a declaration
+	// above math.MaxInt32 rather than narrowing it into an int that cannot
+	// hold it, which on a 32-bit platform would hand back a negative rate for
+	// anything past that point. The encoder refuses the same range, so this
+	// package never writes a rate it will not read. The ceiling is a
+	// representation limit rather than a judgement about what a plausible rate
+	// is: it sits far above anything recording or radio-capture hardware
+	// produces.
+	//
+	// The promise is only as good as its source. A Decoder whose Reset failed
+	// reports the zero value here, and a StreamInfo a caller builds by hand
+	// can hold anything at all, which is why Duration guards the field rather
+	// than trusting it.
 	//
 	// It remains a number the file declared. Nothing checks it against the
 	// audio, so a rate that passes is still a claim, and code sizing a buffer

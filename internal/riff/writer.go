@@ -83,6 +83,15 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 	if cfg.Format.SampleRate <= 0 {
 		return nil, fmt.Errorf("go-wav/internal/riff: sample rate %d must be positive", cfg.Format.SampleRate)
 	}
+	// The reader refuses a declared rate above this, so writing one would emit
+	// a file this package cannot read back. The fmt chunk's derived byte-rate
+	// field bounds the rate on its own only when a frame is more than one byte
+	// wide, which leaves 8-bit mono free to stamp a rate the reader rejects;
+	// this is the check that closes that gap. See MaxSampleRate.
+	if int64(cfg.Format.SampleRate) > int64(MaxSampleRate) {
+		return nil, fmt.Errorf("go-wav/internal/riff: sample rate %d exceeds the %d this package can read back",
+			cfg.Format.SampleRate, MaxSampleRate)
+	}
 	// The magic is written from Container.String, so an out-of-range value
 	// would emit a seven-byte "unknown" where four bytes belong and corrupt
 	// every offset after it.

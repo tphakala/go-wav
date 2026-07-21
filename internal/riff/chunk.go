@@ -75,28 +75,41 @@ const maxUint32 = int64(1)<<32 - 1
 // maxChunkPayload.
 const maxDataSize uint64 = 1 << 62
 
-// maxSampleRate is the highest sample rate the reader will believe a fmt
-// chunk when it declares one.
+// MaxSampleRate is the highest sample rate this package will read from, or
+// write into, a fmt chunk.
 //
 // The field is a uint32 on the wire and lands in an int, so on a 32-bit target
 // every value above this one wraps negative. That is the whole reason for the
-// ceiling: a rate is not a length the reader consumes, it is a number handed
-// to the caller in StreamInfo.SampleRate to divide durations and positions by,
-// and a negative one runs a progress calculation backwards with no error to
-// say why. Bounding it here is what lets that field promise it is positive.
+// ceiling: a rate is not a length this package consumes, it is a number handed
+// to the caller in StreamInfo.SampleRate, and a negative one makes any
+// duration or position a caller derives from it wrong with no error to say
+// why. Bounding it is what lets that field promise it is positive on every
+// platform.
 //
-// The bound is the representation limit rather than a guess at where real
-// audio stops. 768 kHz is the highest rate any recorder offers and radio
-// captures stored in this container reach tens of megahertz, so a ceiling
-// tight enough to be a sanity check on the audio would be a ceiling low enough
-// to reject a real file. Nothing here divides by the rate or sizes a buffer
-// from it, so there is nothing further to protect: a caller that does size a
-// buffer from a declared rate is doing arithmetic on a number a file claimed,
-// which the field's documentation says is a claim.
+// The bound is the representation limit rather than a judgement about what a
+// plausible rate is. Recorders reach into the hundreds of kilohertz and radio
+// captures stored in this container go higher still, so a ceiling tight enough
+// to be a sanity check on the audio would be a ceiling low enough to reject a
+// real file. This one sits above anything hardware produces while keeping the
+// value inside an int everywhere.
 //
-// It is a policy of this reader rather than a limit of the format, like
+// The cost is paid on every platform for a defect only 32-bit targets had: a
+// rate in (MaxInt32, MaxUint32] used to read back correctly on a 64-bit host
+// and is now refused there too. That is deliberate. A length has a way to say
+// "unknown" and so can be dropped rather than refused, which is what
+// maxDataSize does; a rate has none, because 0 is already a refusal, so the
+// only alternative to rejecting would be handing back a number whose meaning
+// depends on the word size of the machine.
+//
+// It is exported so that the writer can refuse what the reader refuses. A
+// header this package emits must be one it can read back, and the fmt chunk's
+// derived byte-rate field only bounds the rate when the block alignment is
+// more than one byte, which leaves 8-bit mono able to stamp a rate the reader
+// would then reject.
+//
+// It is a policy of this package rather than a limit of the format, like
 // maxDataSize above.
-const maxSampleRate uint32 = math.MaxInt32
+const MaxSampleRate uint32 = math.MaxInt32
 
 // sentinel32 is the value RF64 writes into the 32-bit size fields it has
 // superseded.

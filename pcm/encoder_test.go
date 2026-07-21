@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"testing"
 
@@ -744,5 +745,49 @@ func assertDecodes(tb testing.TB, b []byte, cfg pcm.Config, want []byte) {
 	}
 	if !bytes.Equal(got, want) {
 		tb.Errorf("payload: got %d bytes want %d", len(got), len(want))
+	}
+}
+
+// TestEncoderRefusesRatesTheDecoderRefuses pins the two halves of the sample
+// rate ceiling together at the level a caller sees them. The reader bounds a
+// declared rate so that StreamInfo.SampleRate can promise to be positive on a
+// 32-bit target; without the matching bound here the encoder would happily
+// write a file this package then refuses to read.
+//
+// Eight-bit mono is the geometry that reaches the gap: a frame is one byte, so
+// the fmt chunk's derived byte rate equals the sample rate and does not
+// overflow its own 32-bit field before the rate overflows the ceiling. At any
+// wider frame the byte rate overflows first and hides the problem.
+func TestEncoderRefusesRatesTheDecoderRefuses(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = int64(math.MaxInt32)
+	for _, rate := range []int64{48000, ceiling, ceiling + 1, math.MaxUint32} {
+		// A rate past the ceiling is not expressible as an int on a 32-bit
+		// target, so there it cannot be asked for at all.
+		if int64(int(rate)) != rate {
+			continue
+		}
+		cfg := pcm.Config{SampleRate: int(rate), BitDepth: 8, Channels: 1}
+
+		var buf bytes.Buffer
+		err := pcm.EncodeInterleaved(&buf, cfg, []byte{1, 2, 3, 4})
+		if rate > ceiling {
+			if err == nil {
+				t.Errorf("rate %d: encoder wrote a file the decoder refuses", rate)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("rate %d: encoder refused a rate the decoder accepts: %v", rate, err)
+		}
+
+		info, _, derr := pcm.DecodeInterleaved(buf.Bytes())
+		if derr != nil {
+			t.Fatalf("rate %d: encoder wrote a file the decoder refuses: %v", rate, derr)
+		}
+		if int64(info.SampleRate) != rate {
+			t.Errorf("rate %d round tripped as %d", rate, info.SampleRate)
+		}
 	}
 }
