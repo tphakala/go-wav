@@ -133,8 +133,10 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 			"go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}
 	// Widening a whole file in one call is the only place this package asks
-	// for a buffer whose length may not be expressible: a streaming converter
-	// never holds more than one batch, so it can never get near the limit.
+	// for a buffer whose length may not be expressible. The streaming
+	// converter cannot reach the limit because maxConvertBatch bounds every
+	// batch it stages; here the whole file is the batch, and the file's size
+	// is not this package's to choose.
 	if !convertedBytesFit(len(audio)/srcWidth, dstWidth, math.MaxInt) {
 		return wav.StreamInfo{}, nil, fmt.Errorf(
 			"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",
