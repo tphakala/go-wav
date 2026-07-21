@@ -29,10 +29,13 @@ func TestConvertingReadCapsTheBatch(t *testing.T) {
 	t.Parallel()
 
 	const (
-		// One batch is 64 KiB of source, which at eight bytes per sample is
-		// 8192 samples and so 8192 converted bytes.
-		wantFirstRead = 8192
-		callerBuffer  = 64 << 10
+		// float64 source, 8-bit destination: one batch of source holds
+		// MaxConvertBatch/8 samples, each converting to one byte.
+		srcWidth      = 8
+		wantFirstRead = pcm.MaxConvertBatch / srcWidth
+		// Comfortably past the point where the cap, rather than the buffer,
+		// is what bounds the read.
+		callerBuffer = pcm.MaxConvertBatch
 	)
 
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 64, Channels: 1, Format: wav.SampleFormatFloat}
@@ -50,15 +53,20 @@ func TestConvertingReadCapsTheBatch(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	if n != wantFirstRead {
-		t.Fatalf("Read returned %d bytes, want the %d one bounded batch yields; "+
-			"filling all %d would mean the batch was sized from the caller's buffer",
-			n, wantFirstRead, len(buf))
+		t.Fatalf("Read returned %d bytes from a %d byte buffer, want the %d that one "+
+			"%d byte source batch yields",
+			n, len(buf), wantFirstRead, pcm.MaxConvertBatch)
 	}
 }
 
-// TestConvertingReadIsWholeAcrossBufferSizes pins that the cap costs no data:
+// TestConvertingReadIsWholeAcrossBufferSizes pins that batching costs no data:
 // draining the same stream through buffers on either side of the cap must
 // yield identical bytes, whatever the direction of the conversion.
+//
+// It is an equivalence test, so it is deliberately insensitive to how the
+// decoder batches; removing the cap leaves it green. That is the point, since
+// its job is to show the cap loses nothing rather than to show it exists.
+// TestConvertingReadCapsTheBatch above is what pins the cap itself.
 func TestConvertingReadIsWholeAcrossBufferSizes(t *testing.T) {
 	t.Parallel()
 
@@ -101,7 +109,7 @@ func TestConvertingReadIsWholeAcrossBufferSizes(t *testing.T) {
 			// Sizes on both sides of the cap, from a buffer smaller than one
 			// converted sample up to one far larger than any batch, so the
 			// bound is exercised whichever of the two is the operative one.
-			for _, size := range []int{1, 4096, 64 << 10, 1 << 20} {
+			for _, size := range []int{1, 4096, 64 << 10, 1 << 20, 8 << 20} {
 				got := drainInto(t, file, tc.convert, size)
 				if !bytes.Equal(got, want) {
 					t.Errorf("%d byte reads yielded %d bytes, want the %d bytes ReadAll yields",

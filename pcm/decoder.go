@@ -320,13 +320,17 @@ func (d *Decoder) Info() wav.StreamInfo { return d.info }
 
 // Read reads interleaved samples into p and returns how many bytes it wrote.
 //
-// It is an ordinary io.Reader and returns short reads. Without a conversion it
-// fills p whenever the source can; under [WithConvertTo] it is additionally
-// bounded by the batch the decoder stages, so a large p is filled over several
-// calls however much audio is left: a float64 source read as 8-bit yields
-// 8 KiB per call whatever the caller asks for. A short read is not the end of
-// the stream, which is reported as io.EOF; callers must loop, or hand the
-// decoder to io.Copy, io.ReadAll or io.ReadFull.
+// It is an ordinary io.Reader and returns short reads. Without a conversion a
+// short read is whatever the source gave, since the source is read once per
+// call and need not fill p. Under [WithConvertTo] the decoder bounds itself as
+// well: it converts one staged batch per call, so once p is larger than that
+// batch yields, the returned count stops growing with it. A float64 source
+// read as 8-bit is served 8 KiB per call for any p of 8193 bytes or more, and
+// fills a smaller p as before.
+//
+// A short read is not the end of the stream, which is reported as io.EOF.
+// Callers must loop, or hand the decoder to io.Copy, io.ReadAll or
+// io.ReadFull.
 //
 // By default the bytes are those stored in the file, with the single exception
 // below. That means the encoding varies with the source, and in particular that
