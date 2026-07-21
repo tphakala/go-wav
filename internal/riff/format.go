@@ -103,9 +103,14 @@ func parseFmt(b []byte) (Format, error) {
 	var f Format
 	tag := binary.LittleEndian.Uint16(b[0:2])
 	f.Channels = int(binary.LittleEndian.Uint16(b[2:4]))
-	f.SampleRate = int(binary.LittleEndian.Uint32(b[4:8]))
 	f.BlockAlign = int(binary.LittleEndian.Uint16(b[12:14]))
 	f.BitDepth = int(binary.LittleEndian.Uint16(b[14:16]))
+
+	// The rate is checked as the uint32 it is on the wire, before it is
+	// narrowed. Converting first and checking after would be checking a value
+	// that has already wrapped on a 32-bit target, where the wrap is the thing
+	// being guarded against.
+	rate := binary.LittleEndian.Uint32(b[4:8])
 
 	// Zero channels or a zero sample rate appear in genuinely damaged files
 	// and would divide by zero in every size computation downstream, so they
@@ -114,10 +119,18 @@ func parseFmt(b []byte) (Format, error) {
 		return Format{}, fmt.Errorf("go-wav/internal/riff: %w: fmt chunk declares zero channels",
 			wav.ErrCorruptStream)
 	}
-	if f.SampleRate == 0 {
+	if rate == 0 {
 		return Format{}, fmt.Errorf("go-wav/internal/riff: %w: fmt chunk declares a zero sample rate",
 			wav.ErrCorruptStream)
 	}
+	// A rate above the ceiling cannot be held as a positive int everywhere, so
+	// it is refused rather than passed on as a negative one; see maxSampleRate.
+	if rate > maxSampleRate {
+		return Format{}, fmt.Errorf(
+			"go-wav/internal/riff: %w: fmt chunk declares a sample rate of %d, above the %d this reader accepts",
+			wav.ErrCorruptStream, rate, maxSampleRate)
+	}
+	f.SampleRate = int(rate)
 
 	if tag == tagExtensible {
 		if len(b) < fmtSizeExtensible {

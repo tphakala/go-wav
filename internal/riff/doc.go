@@ -40,6 +40,12 @@
 // guarded and reports [github.com/tphakala/go-wav.ErrTooLarge] rather than
 // wrapping.
 //
+// The fmt chunk's own fields are the exception, being small by construction:
+// channels and bit depth are 16-bit and land in an int on any platform. The
+// sample rate is 32 bits and does not, so it is checked before it is narrowed
+// and a declaration too wide for an int everywhere is refused rather than
+// wrapped into a negative rate.
+//
 // # Tolerance
 //
 // Real WAV files violate the specification constantly, so the reader accepts a
@@ -48,8 +54,11 @@
 // order before fmt and data, and unknown chunks anywhere. A declared frame
 // count above the ceiling the reader will believe, or a fact chunk holding the
 // supersession sentinel, is reported as unknown rather than repeated to the
-// caller. It does not guess a sample format: a stream it cannot decode is
-// reported, never reinterpreted,
+// caller. The fmt chunk gets no such latitude, because a stream whose shape is
+// unreadable cannot be decoded at all: zero channels, a zero sample rate and a
+// rate too large to hold as a positive int are each refused outright rather
+// than reported as unknown. It does not guess a sample format: a stream it
+// cannot decode is reported, never reinterpreted,
 // and a fmt chunk naming A-law or mu-law at a width other than the 8 bits
 // G.711 defines is refused rather than read as though the depth field were the
 // mistake.

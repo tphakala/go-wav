@@ -3,6 +3,7 @@ package riff
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	wav "github.com/tphakala/go-wav"
 )
@@ -73,6 +74,29 @@ const maxUint32 = int64(1)<<32 - 1
 // the auxiliary chunk payloads the reader buffers are bounded separately by
 // maxChunkPayload.
 const maxDataSize uint64 = 1 << 62
+
+// maxSampleRate is the highest sample rate the reader will believe a fmt
+// chunk when it declares one.
+//
+// The field is a uint32 on the wire and lands in an int, so on a 32-bit target
+// every value above this one wraps negative. That is the whole reason for the
+// ceiling: a rate is not a length the reader consumes, it is a number handed
+// to the caller in StreamInfo.SampleRate to divide durations and positions by,
+// and a negative one runs a progress calculation backwards with no error to
+// say why. Bounding it here is what lets that field promise it is positive.
+//
+// The bound is the representation limit rather than a guess at where real
+// audio stops. 768 kHz is the highest rate any recorder offers and radio
+// captures stored in this container reach tens of megahertz, so a ceiling
+// tight enough to be a sanity check on the audio would be a ceiling low enough
+// to reject a real file. Nothing here divides by the rate or sizes a buffer
+// from it, so there is nothing further to protect: a caller that does size a
+// buffer from a declared rate is doing arithmetic on a number a file claimed,
+// which the field's documentation says is a claim.
+//
+// It is a policy of this reader rather than a limit of the format, like
+// maxDataSize above.
+const maxSampleRate uint32 = math.MaxInt32
 
 // sentinel32 is the value RF64 writes into the 32-bit size fields it has
 // superseded.
