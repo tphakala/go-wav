@@ -92,6 +92,83 @@ func unpatchedRF64(tb testing.TB, src []byte) []byte {
 	return file
 }
 
+// rf64DeclaringOnlyACount returns an RF64 stream whose ds64 dataSize was never
+// stamped but whose sampleCount was, which is the one shape where the decoder
+// has a frame count and no byte length to corroborate it.
+//
+// unpatchedRF64 above zeroes both fields and so lands in the ordinary
+// unknown-everything case. This one keeps the count, which is what
+// riff.resolveFrames falls back to precisely because the size is missing.
+func rf64DeclaringOnlyACount(tb testing.TB, src []byte, declared uint64) []byte {
+	tb.Helper()
+	cfg := seekCfg
+	cfg.RF64 = pcm.RF64Always
+	file := encodeFixture(tb, cfg, src)
+	span := requireChunk(tb, file, "ds64")
+	binary.LittleEndian.PutUint64(file[span.payload+8:], 0)         // dataSize: never stamped
+	binary.LittleEndian.PutUint64(file[span.payload+16:], declared) // sampleCount: stamped
+	return file
+}
+
+// TestDeclaredCountDoesNotBoundSeeks pins both halves of the disagreement issue
+// #18 is about, so that neither can drift without the other being reconsidered.
+//
+// A stream can carry a frame count while carrying no byte length: the count
+// comes from a ds64 sampleCount or a fact chunk, which resolveFrames consults
+// *because* the size is missing. Info then reports a definite count and a
+// definite duration, while SeekToFrame has no boundary to clamp against and so
+// honours a request far beyond them.
+//
+// Both behaviours are deliberate and neither is being changed here. A declared
+// count is a claim, so bounding seeks by it would refuse to reach real audio in
+// a file that declares less than it holds, which is the interrupted-writer case
+// the fallback exists to serve. What this test exists for is to make the
+// combination a stated property rather than an accident, since the two are
+// governed by one fact and read as contradictory without it.
+func TestDeclaredCountDoesNotBoundSeeks(t *testing.T) {
+	t.Parallel()
+
+	const declared = seekFrames
+	src := pattern(seekFrames * seekPerFrame)
+	file := rf64DeclaringOnlyACount(t, src, declared)
+
+	d, err := pcm.NewDecoder(bytes.NewReader(file))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+
+	// The count survives the missing length, and the duration derived from it
+	// does too. Zeroing either was tried in #12 and reverted, because it makes
+	// the fallback dead code on this path.
+	info := d.Info()
+	if info.DataSizeKnown {
+		t.Error("DataSizeKnown = true for a stream whose ds64 dataSize was never stamped")
+	}
+	if info.TotalFrames != declared {
+		t.Fatalf("TotalFrames = %d, want the declared %d: the fallback to a ds64 sampleCount is what this fixture exercises",
+			info.TotalFrames, declared)
+	}
+	if info.Duration() == 0 {
+		t.Error("Duration = 0 despite a declared count and a known sample rate")
+	}
+
+	// And the seek is not bounded by it.
+	const past = declared * 10
+	got, err := d.SeekToFrame(past)
+	if err != nil {
+		t.Fatalf("SeekToFrame(%d): %v", past, err)
+	}
+	if got != past {
+		t.Errorf("SeekToFrame(%d) = %d, want %d unclamped: a declared count must not bound a seek",
+			past, got, past)
+	}
+
+	// The only end-of-stream signal available on this path.
+	if _, rerr := d.Read(make([]byte, seekPerFrame)); !errors.Is(rerr, io.EOF) {
+		t.Errorf("Read past the audio = %v, want io.EOF", rerr)
+	}
+}
+
 // TestUnknownLengthReportsNoTotalFrames checks the premise every other test in
 // this file relies on: each of the four fixtures below reports both
 // TotalFrames and Duration as zero, so the decoder genuinely does not know how
@@ -383,5 +460,107 @@ func TestSeekWithIgnoreLengthPastDeclaredSize(t *testing.T) {
 	if !bytes.Equal(rest, want) {
 		t.Errorf("after seeking to frame %d under WithIgnoreLength: got %d bytes want %d",
 			frame, len(rest), len(want))
+	}
+}
+
+// TestDataSizeKnownPredictsClamping is the point of the flag: it is the one
+// value a caller can read to know which of SeekToFrame's two rules applies,
+// and it must agree with what the decoder actually does.
+//
+// Asserting the flag alone would be worth little, since a constant false would
+// satisfy it on every fixture in this file. Each case therefore performs the
+// seek as well, so the flag is checked against the behaviour it predicts
+// rather than against itself.
+func TestDataSizeKnownPredictsClamping(t *testing.T) {
+	t.Parallel()
+
+	src := pattern(seekFrames * seekPerFrame)
+	const past = seekFrames * 10
+
+	t.Run("declared size bounds the seek", func(t *testing.T) {
+		t.Parallel()
+		d, err := pcm.NewDecoder(bytes.NewReader(encodeFixture(t, seekCfg, src)))
+		if err != nil {
+			t.Fatalf("NewDecoder: %v", err)
+		}
+		if !d.Info().DataSizeKnown {
+			t.Fatal("DataSizeKnown = false for an ordinary stream with a stamped size")
+		}
+		got, serr := d.SeekToFrame(past)
+		if serr != nil {
+			t.Fatalf("SeekToFrame: %v", serr)
+		}
+		if got != seekFrames {
+			t.Errorf("SeekToFrame(%d) = %d, want it clamped to %d: DataSizeKnown promised a boundary",
+				past, got, seekFrames)
+		}
+	})
+
+	for _, route := range unknownLengthRoutes() {
+		t.Run("no boundary: "+route.name, func(t *testing.T) {
+			t.Parallel()
+			d, err := pcm.NewDecoder(bytes.NewReader(route.file(t, src)), route.opts...)
+			if err != nil {
+				t.Fatalf("NewDecoder: %v", err)
+			}
+			if d.Info().DataSizeKnown {
+				t.Fatalf("DataSizeKnown = true on the %q route", route.name)
+			}
+			got, serr := d.SeekToFrame(past)
+			if serr != nil {
+				t.Fatalf("SeekToFrame: %v", serr)
+			}
+			if got != past {
+				t.Errorf("SeekToFrame(%d) = %d, want it unclamped: DataSizeKnown promised no boundary",
+					past, got)
+			}
+		})
+	}
+}
+
+// TestDataSizeKnownIsNotAPromiseTheAudioIsThere pins the limit of what the flag
+// says, which is the half most likely to be misread.
+//
+// A declared size is a claim like any other. A file truncated after it was
+// written still carries the header it was given, so the decoder reports the
+// original count, bounds seeks by the original size, and lands a seek well past
+// the bytes that survive without complaint. Only the Read afterwards can say
+// so. Anyone reading DataSizeKnown as "the audio is all there" would get this
+// case wrong, and the field's doc says as much.
+func TestDataSizeKnownIsNotAPromiseTheAudioIsThere(t *testing.T) {
+	t.Parallel()
+
+	full := encodeFixture(t, seekCfg, pattern(seekFrames*seekPerFrame))
+	// Drop the second half of the audio and leave the header untouched, which
+	// is what a truncated copy of a complete file looks like.
+	const surviving = seekFrames / 2
+	cut := full[:len(full)-surviving*seekPerFrame]
+
+	d, err := pcm.NewDecoder(bytes.NewReader(cut))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+
+	info := d.Info()
+	if !info.DataSizeKnown {
+		t.Fatal("DataSizeKnown = false: truncation does not change the header")
+	}
+	if info.TotalFrames != seekFrames {
+		t.Errorf("TotalFrames = %d, want the declared %d: the count comes from the header, not the bytes",
+			info.TotalFrames, seekFrames)
+	}
+
+	// Inside the declared range, past the surviving audio.
+	const target = seekFrames - 10
+	got, serr := d.SeekToFrame(target)
+	if serr != nil {
+		t.Fatalf("SeekToFrame(%d): %v", target, serr)
+	}
+	if got != target {
+		t.Errorf("SeekToFrame(%d) = %d, want %d: the clamp respects the declared size, not the surviving bytes",
+			target, got, target)
+	}
+	if _, rerr := d.Read(make([]byte, seekPerFrame)); !errors.Is(rerr, io.EOF) {
+		t.Errorf("Read past the surviving audio = %v, want io.EOF: it is the only signal that the file is short", rerr)
 	}
 }

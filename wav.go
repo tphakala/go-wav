@@ -192,14 +192,23 @@ type StreamInfo struct {
 	// fmt chunk. It is 0 when the stream did not declare one.
 	ChannelMask uint32
 
-	// TotalFrames is the number of inter-channel frames in the stream. When
-	// the data chunk size is known the count is derived from it, so it
-	// describes bytes that are present. When the size is absent or
-	// unreadable the count comes instead from whatever the header declared,
-	// a ds64 sampleCount or a fact chunk. A declared count is a claim about
-	// the audio rather than a measurement of it, so it need not match the
-	// bytes the stream actually carries: a recording cut short by a crash
-	// routinely declares more than it holds.
+	// TotalFrames is the number of inter-channel frames in the stream.
+	//
+	// Read back from a decoder it is always a claim, never a measurement.
+	// When the data chunk size is known the count is derived from that size;
+	// when the size is absent or unreadable it comes instead from a ds64
+	// sampleCount or a fact chunk. Both are numbers a writer stamped, and
+	// neither is checked against the bytes that are actually there, because
+	// checking would mean reading the stream to its end before answering. A
+	// recording cut short by a crash routinely declares more than it holds,
+	// and so does a file truncated after it was written: both report the
+	// count their header still claims.
+	//
+	// So a caller must not treat this as the end of the audio. Reading until
+	// io.EOF is the only way to learn how much a stream really carries, and
+	// [StreamInfo.DataSizeKnown] reports whether the count came with a
+	// boundary the decoder will bound reads and seeks by, which is a
+	// different question from whether the count is right.
 	//
 	// The reader will not repeat a declaration it can see is impossible. A
 	// declared count is kept only if the audio it claims stays under the
@@ -219,6 +228,33 @@ type StreamInfo struct {
 	// this field. An encoder fills the same struct from what it has written,
 	// where 0 does mean no frames yet.
 	TotalFrames uint64
+
+	// DataSizeKnown reports whether the stream declared a data chunk size the
+	// decoder will bound reads and seeks by.
+	//
+	// It is the one fact that predicts how a decoder behaves at the end of a
+	// stream, and it is not observable from TotalFrames, because a count can
+	// be present either way: with a size, it is derived from that size;
+	// without one, it comes from a ds64 sampleCount or a fact chunk, which
+	// the reader consults precisely because the size is missing.
+	//
+	// When it is true, Decoder.Read stops at the declared boundary and
+	// Decoder.SeekToFrame clamps to it, so a seek returning a lower frame
+	// than the one requested means the stream ran out. When it is false there
+	// is no boundary: reads run to the end of the source, and a seek past the
+	// audio is performed as asked and reports the frame requested. It is
+	// It is false whenever the reader found no size it could use: a data
+	// chunk size of zero or the RF64 sentinel, a ds64 that was never stamped
+	// or that declares an implausible length, and, whatever the header said,
+	// whenever pcm.WithIgnoreLength is in force.
+	//
+	// It says nothing about whether TotalFrames is correct. A declared size
+	// is a claim like any other, so a true here bounds the decoder by a
+	// number that may still overstate the audio; it means the decoder has a
+	// boundary to honour, not that the boundary is honest. An encoder fills
+	// the same struct and always reports true, since it is writing the data
+	// chunk whose size it is stating.
+	DataSizeKnown bool
 }
 
 // BytesPerSample is the storage width of a single-channel sample in bytes.

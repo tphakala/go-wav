@@ -278,6 +278,12 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 	if !d.lengthKnown() {
 		d.remaining = -1
 	}
+	// The header layer fills DataSizeKnown from the size field alone, which is
+	// the whole answer only until WithIgnoreLength is in play: the option
+	// discards a size the header may well have declared. Restating the field
+	// from the same predicate that bounds reads and seeks is what keeps the
+	// exported flag from promising a boundary the decoder is not honouring.
+	d.info.DataSizeKnown = d.lengthKnown()
 	if cfg.ignoreLength {
 		// TotalFrames may have been derived from the declared size, so
 		// ignoring that size makes the count untrustworthy. It can also have
@@ -559,14 +565,23 @@ func (d *Decoder) WriteTo(w io.Writer) (int64, error) {
 // [wav.ErrSeekUnsupported] otherwise.
 //
 // What a seek past the end does depends on whether the stream declared a
-// length the decoder may trust. When it did, a request beyond the audio is
-// clamped to the end of the data chunk and the returned frame is the one
-// actually reached, so a returned frame lower than the requested one means the
-// stream ran out. When the length is unknown, or [WithIgnoreLength] is
-// discarding it, there is no boundary to clamp against: the seek is performed
-// as asked and the requested frame is returned even if it lies past the audio.
-// The next Read then reports io.EOF, which is the only end-of-stream signal
-// available on that path.
+// length the decoder may trust, which [wav.StreamInfo.DataSizeKnown] reports,
+// so a caller can tell which of the two rules below applies before calling.
+// When it did, a request beyond the audio is clamped to the end of the data
+// chunk and the returned frame is the one actually reached, so a returned
+// frame lower than the requested one means the stream ran out. When the length
+// is unknown, or [WithIgnoreLength] is discarding it, there is no boundary to
+// clamp against: the seek is performed as asked and the requested frame is
+// returned even if it lies past the audio. The next Read then reports io.EOF,
+// which is the only end-of-stream signal available on that path.
+//
+// Neither rule promises the audio is there. The boundary a clamp respects is
+// the size the header declared, not a count of bytes present, so a seek into a
+// file truncated after it was written lands inside the declared range and
+// succeeds, and the Read that follows reports io.EOF. A seek that returns the
+// frame it was asked for therefore means only that the frame is within what
+// the stream claims, which is why [wav.StreamInfo.TotalFrames] is documented
+// as a claim rather than an extent.
 //
 // The decoder deliberately does not measure the source to recover a boundary
 // for the unknown-length case. Doing so would cost a seek to the end on every
