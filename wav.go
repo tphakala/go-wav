@@ -206,9 +206,9 @@ type StreamInfo struct {
 	//
 	// So a caller must not treat this as the end of the audio. Reading until
 	// io.EOF is the only way to learn how much a stream really carries, and
-	// [DataSizeKnown] reports whether the count came with a boundary the
-	// decoder will bound reads and seeks by, which is a different question
-	// from whether the count is right.
+	// [StreamInfo.DataSizeKnown] reports whether the count came with a
+	// boundary the decoder will bound reads and seeks by, which is a
+	// different question from whether the count is right.
 	//
 	// The reader will not repeat a declaration it can see is impossible. A
 	// declared count is kept only if the audio it claims stays under the
