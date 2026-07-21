@@ -1295,7 +1295,8 @@ func TestFrameCountFallbacks(t *testing.T) {
 	})
 
 	t.Run("data_size_beats_fact_chunk", func(t *testing.T) {
-		// The data chunk size describes bytes actually present, so it wins.
+		// The data chunk size is the declaration the reader bounds by, so it
+		// wins over a count nothing else corroborates.
 		b := cat(
 			fileHeader(idRIFF, 0, idWAVE),
 			chunk(idFmt, fmtPayload16(tagIEEEFloat, 1, 48000, 32)),

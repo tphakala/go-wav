@@ -243,8 +243,10 @@ type StreamInfo struct {
 	// than the one requested means the stream ran out. When it is false there
 	// is no boundary: reads run to the end of the source, and a seek past the
 	// audio is performed as asked and reports the frame requested. It is
-	// false for a stream whose size field was never patched, for one holding
-	// the RF64 sentinel, and whenever pcm.WithIgnoreLength is in force.
+	// It is false whenever the reader found no size it could use: a data
+	// chunk size of zero or the RF64 sentinel, a ds64 that was never stamped
+	// or that declares an implausible length, and, whatever the header said,
+	// whenever pcm.WithIgnoreLength is in force.
 	//
 	// It says nothing about whether TotalFrames is correct. A declared size
 	// is a claim like any other, so a true here bounds the decoder by a

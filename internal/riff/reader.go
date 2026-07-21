@@ -182,9 +182,14 @@ func resolveDataSize(size uint32, container wav.Container, haveDS64 bool, ds64 d
 }
 
 // resolveFrames determines the inter-channel frame count. The data chunk size
-// is authoritative because it describes bytes actually present; ds64's
-// sampleCount and the fact chunk are consulted only when it is unknown, and
-// never allowed to override it.
+// wins when it is usable, and ds64's sampleCount and the fact chunk are
+// consulted only when it is not, never allowed to override it.
+//
+// The size is preferred because it is the declaration the reader also bounds
+// reads and seeks by, so a count derived from it agrees with what the decoder
+// will hand back. That is not the same as describing bytes that are present:
+// nothing here compares any of the three against the source, and a truncated
+// file reports whichever of them its header still carries.
 //
 // Both fallbacks are bounded on the way through, the way resolveDataSize bounds
 // the size it returns, because a count nothing corroborates is exactly the
