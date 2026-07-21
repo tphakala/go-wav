@@ -44,7 +44,13 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // also covers an A-law or mu-law file decoded with no option at all: a
 // companded byte is expanded to linear 16-bit PCM whether or not a conversion
 // was asked for, so the result is about twice the stored audio and could not
-// be a window onto it. The options alone therefore do not tell a caller which
+// be a window onto it.
+//
+// That buffer is proportional to b and can be larger than it, by at most four
+// times, which is 8-bit audio widened to 32-bit. Unlike [Decoder], which
+// streams through a bounded batch, this holds the whole result at once, so a
+// caller deciding how much to read into b is also deciding the peak
+// allocation. The options alone therefore do not tell a caller which
 // case it is in. Code that writes through the returned slice to edit its own
 // buffer, or that counts on there being no allocation, has to rule the
 // expansion out rather than infer it from the absence of an option:

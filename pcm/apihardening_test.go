@@ -2,7 +2,6 @@ package pcm_test
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"testing"
 
@@ -24,32 +23,12 @@ func TestDecoderTinyReadsUnderConversion(t *testing.T) {
 
 	for _, size := range []int{1, 2, 3, 5, 7} {
 		t.Run(string(rune('0'+size))+"_byte_reads", func(t *testing.T) {
-			d, err := pcm.NewDecoder(bytes.NewReader(buf.Bytes()), pcm.WithConvertTo(16))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got []byte
-			p := make([]byte, size)
-			for {
-				n, rerr := d.Read(p)
-				got = append(got, p[:n]...)
-				if errors.Is(rerr, io.EOF) {
-					break
-				}
-				if rerr != nil {
-					t.Fatalf("Read with a %d byte buffer: %v", size, rerr)
-				}
-				if n == 0 {
-					t.Fatalf("Read with a %d byte buffer made no progress", size)
-				}
-			}
+			got := drainInto(t, buf.Bytes(), 16, size)
 			if len(got) != len(src)*2 {
 				t.Errorf("got %d bytes, want %d", len(got), len(src)*2)
 			}
 			// Must equal what a single large read produces.
-			d2, _ := pcm.NewDecoder(bytes.NewReader(buf.Bytes()), pcm.WithConvertTo(16))
-			want, _ := io.ReadAll(d2)
-			if !bytes.Equal(got, want) {
+			if want := readAllConverted(t, buf.Bytes(), 16); !bytes.Equal(got, want) {
 				t.Errorf("tiny reads differ from one large read")
 			}
 		})

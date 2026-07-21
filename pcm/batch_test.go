@@ -102,6 +102,17 @@ func TestConvertBatchLenClampsToRemaining(t *testing.T) {
 	}{
 		{"exhausted", 4096, 2, 2, 0, 0},
 		{"fragment shorter than a sample", 4096, 2, 2, 1, 0},
+		// The widths are rejected by the caller before it gets here, but the
+		// division would panic without the guard, and the test enters the
+		// function directly.
+		{"zero source width", 4096, 0, 2, -1, 0},
+		{"zero destination width", 4096, 2, 0, -1, 0},
+		{"negative source width", 4096, -1, 2, -1, 0},
+		{"negative destination width", 4096, 2, -1, -1, 0},
+		// A caller cannot pass a negative len(p), but the function takes a
+		// length rather than a slice, so nothing in its signature says so.
+		{"empty buffer still stages one sample", 0, 2, 2, -1, 2},
+		{"negative buffer still stages one sample", -1, 2, 2, -1, 2},
 		{"fragment after a whole sample", 4096, 2, 2, 3, 2},
 		{"chunk shorter than the buffer", 4096, 4, 2, 40, 40},
 		{"buffer shorter than the chunk", 8, 2, 2, 4096, 8},
