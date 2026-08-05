@@ -45,8 +45,10 @@ const (
 //
 // Every string field below is written ASCII and NUL-padded to a fixed wire
 // width; Config.validate rejects a value that does not fit rather than
-// truncating it. UMID and the five loudness fields the format defines are
-// always written zero, since this package has no source for them.
+// truncating it. UMID is binary and written verbatim; the five loudness
+// fields are signed little-endian int16 values. Version gates those last two
+// groups, and validate keeps Version and the fields consistent: see the field
+// documentation below.
 type Bext struct {
 	// Description is free text describing the sound sequence. NUL-padded to
 	// 256 bytes on the wire; must not exceed that width.
@@ -75,14 +77,36 @@ type Bext struct {
 	// first.
 	TimeReference uint64
 
-	// Version is the bext chunk version number, written verbatim. This
-	// encoder always writes UMID, the field version 1 adds, and the five
-	// loudness values, the fields version 2 adds, as zero, because it has no
-	// source for either: setting Version to 1 or 2 does not populate them. A
-	// spec-aware reader may interpret a zero loudness value as a measured
-	// zero rather than as "not measured", so callers who care about that
-	// distinction should leave Version at 0.
+	// Version is the bext chunk version number, written verbatim. It selects
+	// which of the fields below a reader interprets: version 1 adds UMID,
+	// version 2 adds the five loudness fields. validate keeps Version and those
+	// fields consistent, refusing a UMID set with Version below 1 or a loudness
+	// field set with Version below 2. The converse is deliberately not
+	// enforced: a version 2 chunk that leaves the loudness fields zero asserts
+	// a measured zero, not "not measured", so populate them or lower Version if
+	// that is not what you mean.
 	Version uint16
+
+	// UMID is the SMPTE 330M unique material identifier that bext version 1
+	// adds, written verbatim as the 64 raw bytes of the field. Unlike the text
+	// fields above it is binary, not ASCII, so it is neither width-checked nor
+	// character-checked; the array itself is the wire field. The zero value
+	// writes 64 NUL bytes, which readers treat as "no UMID". validate refuses a
+	// non-zero UMID unless Version is at least 1.
+	UMID [bextUMIDSize]byte
+
+	// LoudnessValue, LoudnessRange, MaxTruePeakLevel, MaxMomentaryLoudness and
+	// MaxShortTermLoudness are the five signed loudness metrics that bext
+	// version 2 adds, from EBU R128 and Tech 3285. Each is a little-endian
+	// int16 in units of 0.01: LoudnessValue, MaxMomentaryLoudness and
+	// MaxShortTermLoudness are LUFS, LoudnessRange is LU, and MaxTruePeakLevel
+	// is dBTP. The zero value writes zeros; validate refuses any non-zero
+	// loudness field unless Version is at least 2.
+	LoudnessValue        int16
+	LoudnessRange        int16
+	MaxTruePeakLevel     int16
+	MaxMomentaryLoudness int16
+	MaxShortTermLoudness int16
 
 	// CodingHistory is a free text record of the coding processes applied to
 	// the audio. It is appended after the fixed 602-byte body and may be
@@ -92,6 +116,17 @@ type Bext struct {
 	// control characters this field accepts.
 	CodingHistory string
 }
+
+// Names of the five bext loudness fields, used in validate's version-gating
+// error messages and, in the tests, as labels tied to the same wire order.
+// They are constants because each name appears at more than one site.
+const (
+	bextLoudnessValueName        = "LoudnessValue"
+	bextLoudnessRangeName        = "LoudnessRange"
+	bextMaxTruePeakLevelName     = "MaxTruePeakLevel"
+	bextMaxMomentaryLoudnessName = "MaxMomentaryLoudness"
+	bextMaxShortTermLoudnessName = "MaxShortTermLoudness"
+)
 
 // validate reports the first problem with a bext descriptor, or nil. The op
 // names the calling entry point, matching Config.validate.
@@ -113,6 +148,34 @@ func (b *Bext) validate(op string) error {
 	}
 	if err := checkCodingHistory(op, "CodingHistory", b.CodingHistory); err != nil {
 		return err
+	}
+	// UMID is a bext version 1 field and the loudness values are version 2
+	// fields. Refuse a value paired with a Version too low to make it readable:
+	// a lower-version reader ignores the bytes, so leaving Version there while
+	// filling the field in silently drops the datum, and a zero left in a field
+	// the Version does advertise is itself a claim (a measured zero), which is
+	// why validate gates on the field being non-zero rather than the reverse.
+	if b.UMID != ([bextUMIDSize]byte{}) && b.Version < 1 {
+		return fmt.Errorf("go-wav/pcm: %s: bext UMID is set but Version is %d; UMID needs Version >= 1",
+			op, b.Version)
+	}
+	if b.Version < 2 {
+		loudness := []struct {
+			name string
+			val  int16
+		}{
+			{bextLoudnessValueName, b.LoudnessValue},
+			{bextLoudnessRangeName, b.LoudnessRange},
+			{bextMaxTruePeakLevelName, b.MaxTruePeakLevel},
+			{bextMaxMomentaryLoudnessName, b.MaxMomentaryLoudness},
+			{bextMaxShortTermLoudnessName, b.MaxShortTermLoudness},
+		}
+		for _, f := range loudness {
+			if f.val != 0 {
+				return fmt.Errorf("go-wav/pcm: %s: bext %s is set but Version is %d; the loudness fields need Version >= 2",
+					op, f.name, b.Version)
+			}
+		}
 	}
 	return nil
 }
@@ -208,10 +271,20 @@ func (b *Bext) serialize() []byte {
 	binary.LittleEndian.PutUint16(version[:], b.Version)
 	buf = append(buf, version[:]...)
 
-	// UMID and the five loudness fields carry no source in this package, so
-	// they are written zero, which BWF readers treat as "not present".
-	buf = append(buf, make([]byte, bextUMIDSize)...)
-	buf = append(buf, make([]byte, bextLoudnessFieldSize*bextLoudnessFieldCount)...)
+	// UMID (bext version 1) and the five loudness fields (version 2) are
+	// written from the descriptor. validate has already refused a non-zero
+	// value paired with a Version too low to make it readable, so a zero here
+	// is a deliberate "not present", which BWF readers treat as absent.
+	buf = append(buf, b.UMID[:]...)
+
+	var loudness [bextLoudnessFieldSize * bextLoudnessFieldCount]byte
+	putInt16LE(loudness[0:2], b.LoudnessValue)
+	putInt16LE(loudness[2:4], b.LoudnessRange)
+	putInt16LE(loudness[4:6], b.MaxTruePeakLevel)
+	putInt16LE(loudness[6:8], b.MaxMomentaryLoudness)
+	putInt16LE(loudness[8:10], b.MaxShortTermLoudness)
+	buf = append(buf, loudness[:]...)
+
 	buf = append(buf, make([]byte, bextReservedSize)...)
 
 	buf = append(buf, b.CodingHistory...)
@@ -224,4 +297,13 @@ func appendPadded(dst []byte, s string, width int) []byte {
 	field := make([]byte, width)
 	copy(field, s)
 	return append(dst, field...)
+}
+
+// putInt16LE writes v as a little-endian 16-bit value into the first two bytes
+// of dst. The bext loudness fields are signed (EBU R128 values in units of
+// 0.01 LU, LUFS or dBTP), so the sign bit is part of the datum; the uint16
+// conversion reinterprets the same 16 bits for the wire and never loses any.
+func putInt16LE(dst []byte, v int16) {
+	//nolint:gosec // G115: width-preserving int16 to uint16 reinterpretation of a fixed 16-bit wire field.
+	binary.LittleEndian.PutUint16(dst, uint16(v))
 }
