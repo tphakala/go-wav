@@ -1,9 +1,12 @@
 package pcm
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"time"
+
+	wav "github.com/tphakala/go-wav"
 )
 
 // Field widths of the bext (Broadcast Wave Format) chunk body, as EBU Tech
@@ -39,9 +42,10 @@ const (
 // writes no bext chunk at all, and the encoder's output is then byte-for-byte
 // identical to a Config that never mentions this type.
 //
-// Bext is written only, never read back: a decoder that opens a stream
-// carrying one skips it like any other chunk it does not recognise, the same
-// as every other metadata chunk this package does not expose on read.
+// A decoder exposes the bext chunk of a stream it opens through
+// [Decoder.Bext], which parses it back into this same type. The other metadata
+// chunks (LIST, cue, smpl, iXML and the rest) are still skipped and not
+// surfaced on read.
 //
 // Every string field below is written ASCII and NUL-padded to a fixed wire
 // width; Config.validate rejects a value that does not fit rather than
@@ -306,4 +310,86 @@ func appendPadded(dst []byte, s string, width int) []byte {
 func putInt16LE(dst []byte, v int16) {
 	//nolint:gosec // G115: width-preserving int16 to uint16 reinterpretation of a fixed 16-bit wire field.
 	binary.LittleEndian.PutUint16(dst, uint16(v))
+}
+
+// Byte offsets of each field within the fixed bext body, derived from the
+// widths above so the read path and serialize cannot disagree on where a field
+// begins. Naming them keeps parseBext's slice expressions readable and pins the
+// layout in one place rather than as literals scattered through the parser.
+const (
+	bextOffDescription         = 0
+	bextOffOriginator          = bextOffDescription + bextDescriptionSize
+	bextOffOriginatorReference = bextOffOriginator + bextOriginatorSize
+	bextOffOriginationDate     = bextOffOriginatorReference + bextOriginatorReferenceSize
+	bextOffOriginationTime     = bextOffOriginationDate + bextOriginationDateSize
+	bextOffTimeReference       = bextOffOriginationTime + bextOriginationTimeSize
+	bextOffVersion             = bextOffTimeReference + bextTimeReferenceSize
+	bextOffUMID                = bextOffVersion + bextVersionSize
+	bextOffLoudness            = bextOffUMID + bextUMIDSize
+	bextOffReserved            = bextOffLoudness + bextLoudnessFieldSize*bextLoudnessFieldCount
+)
+
+// parseBext parses a bext chunk body into a Bext, the inverse of serialize. The
+// body is attacker-controlled, so the only length arithmetic is the single
+// check that it holds the fixed 602-byte block; every field offset below is a
+// constant within that block, and CodingHistory is whatever bytes follow it. A
+// body shorter than the block is reported as a corrupt chunk rather than parsed
+// from manufactured zeroes.
+func parseBext(body []byte) (*Bext, error) {
+	if len(body) < bextFixedSize {
+		return nil, fmt.Errorf(
+			"go-wav/pcm: %w: bext chunk is %d bytes, need at least %d",
+			wav.ErrCorruptStream, len(body), bextFixedSize)
+	}
+	b := &Bext{
+		Description:         cutAtNUL(body[bextOffDescription:bextOffOriginator]),
+		Originator:          cutAtNUL(body[bextOffOriginator:bextOffOriginatorReference]),
+		OriginatorReference: cutAtNUL(body[bextOffOriginatorReference:bextOffOriginationDate]),
+		OriginationDate:     cutAtNUL(body[bextOffOriginationDate:bextOffOriginationTime]),
+		OriginationTime:     cutAtNUL(body[bextOffOriginationTime:bextOffTimeReference]),
+		TimeReference: uint64(binary.LittleEndian.Uint32(body[bextOffTimeReference:bextOffTimeReference+4])) |
+			uint64(binary.LittleEndian.Uint32(body[bextOffTimeReference+4:bextOffVersion]))<<32,
+		Version: binary.LittleEndian.Uint16(body[bextOffVersion:bextOffUMID]),
+	}
+	// UMID (version 1) and the five loudness fields (version 2) are read only
+	// when Version admits them, the same gate validate enforces on the write
+	// side. serialize writes those bytes unconditionally, but validate refuses a
+	// non-zero UMID below version 1 or a non-zero loudness field below version 2,
+	// so in a lower-version chunk they are Reserved bytes that may hold anything.
+	// Reading them would invent a UMID or a loudness measurement the chunk never
+	// asserted, and the parsed Bext would then fail validate on a re-encode.
+	if b.Version >= 1 {
+		copy(b.UMID[:], body[bextOffUMID:bextOffLoudness])
+	}
+	if b.Version >= 2 {
+		loud := body[bextOffLoudness:bextOffReserved]
+		b.LoudnessValue = getInt16LE(loud[0:2])
+		b.LoudnessRange = getInt16LE(loud[2:4])
+		b.MaxTruePeakLevel = getInt16LE(loud[4:6])
+		b.MaxMomentaryLoudness = getInt16LE(loud[6:8])
+		b.MaxShortTermLoudness = getInt16LE(loud[8:10])
+	}
+	// The 180 Reserved bytes (bextOffReserved to bextFixedSize) are ignored.
+	// CodingHistory is the variable tail; a writer that NUL-terminates or
+	// NUL-pads it, as many do, reads back without that padding, matching how the
+	// fixed text fields are cut.
+	b.CodingHistory = cutAtNUL(body[bextFixedSize:])
+	return b, nil
+}
+
+// cutAtNUL returns the bytes of f up to the first NUL as a string, or all of f
+// when it holds none. A bext text field is NUL-padded to a fixed width on the
+// wire (see appendPadded), so the first NUL ends the value; validate forbids an
+// interior NUL, so a field this package wrote round-trips through here exactly.
+func cutAtNUL(f []byte) string {
+	before, _, _ := bytes.Cut(f, []byte{0})
+	return string(before)
+}
+
+// getInt16LE reads a little-endian signed 16-bit value, the inverse of
+// putInt16LE. The uint16-to-int16 conversion reinterprets the same 16 bits and
+// loses nothing, exactly as the write side reinterprets int16 to uint16.
+func getInt16LE(b []byte) int16 {
+	//nolint:gosec // G115: width-preserving uint16 to int16 reinterpretation of a fixed 16-bit wire field.
+	return int16(binary.LittleEndian.Uint16(b))
 }

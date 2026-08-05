@@ -117,7 +117,8 @@ type Config struct {
 	// byte-for-byte identical to what it was before this field existed.
 	//
 	// See [Bext] for the fields it carries and the wire width each one is
-	// held to.
+	// held to. A decoder reads a stream's bext chunk back through
+	// [Decoder.Bext], so a decoded chunk can be set here to re-encode it.
 	Bext *Bext
 }
 

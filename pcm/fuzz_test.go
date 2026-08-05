@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -301,6 +302,41 @@ func FuzzBext(f *testing.F) {
 		// CodingHistory starts right after the fixed 602 byte body.
 		if got := string(body[pcm.BextFixedSize:]); got != codingHistory {
 			t.Fatalf("CodingHistory at offset %d: got %q want %q", pcm.BextFixedSize, got, codingHistory)
+		}
+
+		// The reader is the exact inverse of the writer: parsing an accepted
+		// descriptor's serialized body must reproduce it. A validated field has
+		// no interior NUL, so the read side recovers it verbatim.
+		back, perr := pcm.ParseBext(body)
+		if perr != nil {
+			t.Fatalf("ParseBext refused a body Serialize produced: %v", perr)
+		}
+		if !reflect.DeepEqual(back, b) {
+			t.Fatalf("Serialize/ParseBext round trip mismatch\n got %+v\nwant %+v", back, b)
+		}
+	})
+}
+
+// FuzzParseBext checks that parseBext survives an arbitrary chunk body without
+// panicking. A decoded stream's bext body is attacker controlled, so the reader
+// must treat any length or content as untrusted: a short body is a clean error,
+// a long one parses, and neither faults.
+func FuzzParseBext(f *testing.F) {
+	f.Add([]byte(nil))
+	f.Add(make([]byte, pcm.BextFixedSize))
+	f.Add(append(make([]byte, pcm.BextFixedSize), "A=PCM\r\n"...))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, err := pcm.ParseBext(data)
+		// The only rejection is a body shorter than the fixed block, so the
+		// error is fully determined by the length; a body at least that long
+		// always parses to a non-nil descriptor. This turns the target from a
+		// bare no-panic check into one that also fails on a spurious rejection
+		// or a (nil, nil) success.
+		if short := len(data) < pcm.BextFixedSize; (err != nil) != short {
+			t.Fatalf("ParseBext(%d bytes): err = %v, want an error: %v", len(data), err, short)
+		}
+		if err == nil && got == nil {
+			t.Fatalf("ParseBext(%d bytes) returned (nil, nil), want a descriptor", len(data))
 		}
 	})
 }

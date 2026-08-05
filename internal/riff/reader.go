@@ -33,6 +33,12 @@ type Header struct {
 	// BlockAlign is the declared bytes per frame, repaired from the other
 	// fmt fields when the stream declared a nonsensical value.
 	BlockAlign int
+
+	// Bext is the raw body of the stream's bext (Broadcast Wave Format)
+	// chunk, or nil when the stream carried none or the chunk exceeded the
+	// in-memory cap. This package treats it as an opaque payload, mirroring
+	// HeaderConfig.Bext on the write side; the pcm package owns the layout.
+	Bext []byte
 }
 
 // DataSizeUnknown reports whether the data chunk length was undeterminable, in
@@ -60,6 +66,8 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 		factFrames uint64
 		dataSize   = sizeUnknown
 		haveData   bool
+		bextBody   []byte
+		haveBext   bool
 	)
 
 	for !haveData {
@@ -103,6 +111,23 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 				factFrames = uint64(binary.LittleEndian.Uint32(payload[:factPayloadSize]))
 			}
 
+		case idBext:
+			payload, rerr := readPayload(br, size)
+			if rerr != nil {
+				return nil, rerr
+			}
+			// EBU Tech 3285 allows at most one bext chunk. If a malformed
+			// stream carries several, the first wins and the rest are skipped
+			// like any other chunk; the payload is still read so the walk stays
+			// aligned. haveBext, rather than a nil check, keeps that first-wins
+			// even when the first body was past the in-memory cap: readPayload
+			// yields nil for such a body, and that "no bext" verdict then stands
+			// rather than being overridden by a smaller later chunk.
+			if !haveBext {
+				haveBext = true
+				bextBody = payload
+			}
+
 		case idData:
 			// The data chunk is not consumed; the caller streams it.
 			dataSize = resolveDataSize(size, container, haveDS64, ds64)
@@ -136,6 +161,7 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 	h := &Header{
 		DataSize:   dataSize,
 		BlockAlign: fmtChunk.BlockAlign,
+		Bext:       bextBody,
 		Info: wav.StreamInfo{
 			SampleRate:     fmtChunk.SampleRate,
 			Channels:       fmtChunk.Channels,

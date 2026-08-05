@@ -20,3 +20,13 @@ func (b *Bext) Serialize() []byte { return b.serialize() }
 // Validate exposes Bext.validate to the pcm_test package, matching Serialize
 // above.
 func (b *Bext) Validate(op string) error { return b.validate(op) }
+
+// ParseBext exposes parseBext to the pcm_test package, so a fuzz target can
+// drive the reader with arbitrary bodies and a round-trip test can invert
+// Serialize directly rather than only through a whole decoded stream.
+func ParseBext(b []byte) (*Bext, error) { return parseBext(b) }
+
+// BextOffVersion is the byte offset of the Version field within a bext body,
+// exposed so a version-gating test can lower the on-wire Version without
+// restating the offset the parser derives.
+const BextOffVersion = bextOffVersion
