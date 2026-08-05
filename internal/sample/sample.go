@@ -72,8 +72,8 @@ func ConvertedLen(srcLen, srcBits, dstBits int) int {
 // safe only because it batches, and a one-shot path that hands over a whole
 // file is one line away from asking for a product that does not fit.
 func convertedLen(srcLen, srcBits, dstBits int) (int, bool) {
-	srcWidth := bytesPerSample(srcBits)
-	dstWidth := bytesPerSample(dstBits)
+	srcWidth := BytesPerSample(srcBits)
+	dstWidth := BytesPerSample(dstBits)
 	if srcLen <= 0 || srcWidth <= 0 || dstWidth <= 0 {
 		return 0, true
 	}
@@ -151,8 +151,8 @@ func Convert(dst, src []byte, srcFormat wav.SampleFormat, srcBits, dstBits int) 
 
 	// Reslicing both sides to their exact extent lets the loops below drive off
 	// dst alone and keeps the indexed accesses provably in range.
-	srcWidth := bytesPerSample(srcBits)
-	dstWidth := bytesPerSample(dstBits)
+	srcWidth := BytesPerSample(srcBits)
+	dstWidth := BytesPerSample(dstBits)
 	// Capped as well as sliced: the block helpers reslice these to the extent
 	// they expect, and a slice expression is bounded by capacity, so without
 	// the cap a mistake there would silently read or write past the length
@@ -181,8 +181,8 @@ func Convert(dst, src []byte, srcFormat wav.SampleFormat, srcBits, dstBits int) 
 // convertIntToIntBlocked is the general requantiser, covering every width pair.
 // dst and src must already be sized to a whole number of matching samples.
 func convertIntToIntBlocked(dst, src []byte, srcBits, dstBits int) {
-	srcWidth := bytesPerSample(srcBits)
-	dstWidth := bytesPerSample(dstBits)
+	srcWidth := BytesPerSample(srcBits)
+	dstWidth := BytesPerSample(dstBits)
 	shift := dstBits - srcBits
 
 	// The work is blocked through a small stack buffer so that the width
@@ -461,8 +461,8 @@ func encodeBlock(dst []byte, in []int32, bits int) {
 // whole of the structural saving available here, and the rest of the work went
 // into quantize instead.
 func convertFloatToInt(dst, src []byte, srcBits, dstBits int) {
-	srcWidth := bytesPerSample(srcBits)
-	dstWidth := bytesPerSample(dstBits)
+	srcWidth := BytesPerSample(srcBits)
+	dstWidth := BytesPerSample(dstBits)
 	// int64 keeps 1<<31 well clear of the 32-bit int range, so dstBits == 32 is
 	// safe on a 32-bit host. The positive limit is one below full scale because
 	// +1.0 scales to exactly full scale, which the signed range cannot hold.
@@ -547,10 +547,19 @@ func quantize(f, fullScale, posLimit, negLimit float64) int64 {
 	}
 }
 
-// bytesPerSample is the storage width in bytes of one sample of the given bit
+// BytesPerSample is the storage width in bytes of one sample of the given bit
 // depth. It returns 0 for a depth this package does not store, so callers can
-// use a zero result as a rejection.
-func bytesPerSample(bits int) int {
+// use a zero result as a rejection. It is the one place the conversion path
+// maps a bit depth to a byte width: the pcm decoder and encoder route through
+// it rather than re-deriving (bits+7)/8, so an unsupported depth has a single
+// answer here rather than a formula that quietly disagrees.
+//
+// This is deliberately not the same question as wav.StreamInfo.BytesPerSample,
+// which rounds up ((bits+7)/8) to report the on-disk storage width of a sample
+// that need not fill its last byte. That one must answer 3 for a 20-bit sample;
+// this one answers 0, because 20-bit is not a width the conversion kernels
+// store. Keep them apart.
+func BytesPerSample(bits int) int {
 	switch bits {
 	case 8:
 		return 1

@@ -124,7 +124,7 @@ func decodeMuLaw(code byte) int16 {
 // Blocking mirrors the other conversion loops so that the destination width is
 // switched on once per block rather than once per sample.
 func convertCompandedToInt(dst, src []byte, table *[256]int16, dstBits int) {
-	dstWidth := bytesPerSample(dstBits)
+	dstWidth := BytesPerSample(dstBits)
 	shift := dstBits - 16
 
 	// int32 holds every value this produces. The widest case is 32 bits, where

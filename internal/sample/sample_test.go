@@ -71,7 +71,7 @@ func f64(vals ...float64) []byte {
 // assertions can read in sample space instead of byte space.
 func decodeAll(t *testing.T, b []byte, bits int) []int64 {
 	t.Helper()
-	w := bytesPerSample(bits)
+	w := BytesPerSample(bits)
 	if w == 0 {
 		t.Fatalf("decodeAll: unsupported bit depth %d", bits)
 	}
@@ -80,6 +80,25 @@ func decodeAll(t *testing.T, b []byte, bits int) []int64 {
 		out = append(out, decodeIntRef(b[i:], bits))
 	}
 	return out
+}
+
+// TestBytesPerSample pins the one mapping the conversion path uses from a bit
+// depth to a stored byte width. The supported depths map to the width the
+// kernels store; every other depth, sub-byte or oversized or negative, is 0,
+// which is how a caller reads "not a width I can store" and rejects rather than
+// sizing a buffer from a width that does not exist.
+func TestBytesPerSample(t *testing.T) {
+	supported := map[int]int{8: 1, 16: 2, 24: 3, 32: 4, 64: 8}
+	for bits, want := range supported {
+		if got := BytesPerSample(bits); got != want {
+			t.Errorf("BytesPerSample(%d) = %d, want %d", bits, got, want)
+		}
+	}
+	for _, bits := range []int{-8, 0, 1, 7, 12, 20, 33, 48, 128} {
+		if got := BytesPerSample(bits); got != 0 {
+			t.Errorf("BytesPerSample(%d) = %d, want 0 (unsupported)", bits, got)
+		}
+	}
 }
 
 // convertTo runs Convert into a freshly sized destination and fails the test on
@@ -795,7 +814,7 @@ func TestConvertRefusalsAreDistinguishable(t *testing.T) {
 	t.Parallel()
 
 	const srcBits, dstBits = 24, 32
-	srcWidth := bytesPerSample(srcBits)
+	srcWidth := BytesPerSample(srcBits)
 
 	cases := []struct {
 		name string

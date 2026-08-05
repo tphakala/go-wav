@@ -24,7 +24,7 @@ func benchConvert(b *testing.B, format wav.SampleFormat, srcBits, dstBits int) {
 
 func benchConvertN(b *testing.B, format wav.SampleFormat, srcBits, dstBits, frames int) {
 	b.Helper()
-	srcWidth := bytesPerSample(srcBits)
+	srcWidth := BytesPerSample(srcBits)
 	src := make([]byte, frames*srcWidth)
 	if format == wav.SampleFormatFloat {
 		// Fill with audio-like samples inside full scale. A byte pattern
@@ -129,7 +129,7 @@ func BenchmarkConvertNarrow32to16(b *testing.B) {
 // core, with a significance test over the resulting pairs.
 func benchDirect(b *testing.B, convert func(dst, src []byte), srcBits, dstBits, frames int) {
 	b.Helper()
-	src := make([]byte, frames*bytesPerSample(srcBits))
+	src := make([]byte, frames*BytesPerSample(srcBits))
 	for i := range src {
 		src[i] = byte(i * 7)
 	}
