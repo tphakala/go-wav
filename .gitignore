@@ -27,3 +27,7 @@ cache/
 # Design specs, implementation plans and research notes are working documents.
 # They are kept locally and in the private tracker, never published here.
 docs/
+
+# Transient files a local pre-push review may drop in the tree
+*.gate-diff*.tmp
+.gate-*.tmp

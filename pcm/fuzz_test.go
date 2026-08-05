@@ -2,6 +2,7 @@ package pcm_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -17,6 +18,9 @@ func FuzzDecode(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte("RIFF"))
 	f.Add([]byte("RIFF\x00\x00\x00\x00WAVE"))
+	// BW64 has no encoder here, so its magic reaches the header path only from
+	// a hand-built seed; without this the fuzzer would rarely assemble it.
+	f.Add([]byte("BW64\x00\x00\x00\x00WAVE"))
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}, pattern(64)))
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}, pattern(120)))
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 44100, BitDepth: 32, Channels: 2,
@@ -108,8 +112,26 @@ func FuzzDecode(f *testing.F) {
 			}
 		}
 
-		// Sniff must never panic on a short or hostile slice either.
-		_ = wav.Sniff(data)
+		// Sniff and the decoder must agree on what a WAVE header is. They carry
+		// separate copies of the magic table: wav cannot import internal/riff
+		// (that would be a cycle, since riff imports wav), and the decoder there
+		// parses a stream with richer errors rather than sniffing a slice, so
+		// the two are written independently and must not drift. Only this
+		// direction is an invariant: the decoder rejects plenty of headers Sniff
+		// accepts, for reasons past byte twelve, but it must never reject one
+		// with ErrNotRIFF.
+		if container, ok := wav.SniffContainer(data); ok {
+			d, err := pcm.NewDecoder(bytes.NewReader(data))
+			if errors.Is(err, wav.ErrNotRIFF) {
+				t.Fatalf("SniffContainer accepted a header the decoder rejected as not-RIFF: %v", err)
+			}
+			// When the decoder does accept it, the two must also agree on WHICH
+			// container it is, so the RIFF/RF64/BW64 discrimination cannot drift
+			// between the twelve-byte sniff and the full parse.
+			if err == nil && d.Info().Container != container {
+				t.Fatalf("SniffContainer saw %v but the decoder parsed %v", container, d.Info().Container)
+			}
+		}
 	})
 }
 
