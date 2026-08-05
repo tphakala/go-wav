@@ -171,6 +171,13 @@ type Decoder struct {
 	outBuf []byte
 	outOff int
 
+	// bext memoizes the parsed bext chunk: Bext parses it lazily on the first
+	// call and caches the result. reset zeroes these along with the rest of the
+	// struct, and most decoders are never asked for metadata.
+	bext       *Bext
+	bextParsed bool
+	bextErr    error
+
 	err error
 }
 
@@ -338,6 +345,36 @@ func (d *Decoder) lengthKnown() bool {
 // encoding is in SourceBitDepth and SourceFormat. Info and Read never
 // disagree.
 func (d *Decoder) Info() wav.StreamInfo { return d.info }
+
+// Bext returns the stream's bext (Broadcast Wave Format) chunk, parsed into the
+// same [Bext] type Config.Bext writes, so a decoded chunk can be handed straight
+// back to an [Encoder] for a lossless read-modify-write.
+//
+// It returns (nil, nil) when the stream carries no bext chunk, or one larger
+// than the reader's in-memory cap. It returns (nil, err) with err wrapping
+// [wav.ErrCorruptStream] when a bext chunk is present but malformed, shorter
+// than its fixed 602-byte body; the audio still decodes, since metadata damage
+// never fails the stream, and opening the stream never fails on a bad bext. The
+// error surfaces only here.
+//
+// A wild file may carry values the encoder's validation refuses: non-ASCII
+// text, an unconventional date separator, control bytes in the coding history.
+// Bext returns them faithfully, and a later NewEncoder with that Bext then
+// reports the exact field it will not write rather than silently sanitising it.
+// The parse is lazy and memoized, so calling Bext more than once is cheap.
+func (d *Decoder) Bext() (*Bext, error) {
+	// Unlike Read, WriteTo and SeekToFrame, this does not gate on d.err: like
+	// Info it serves header metadata, which is still valid after a mid-stream
+	// read error, and after a failed reset d.hdr is nil so the guard below
+	// returns (nil, nil) rather than a bext from a stale stream.
+	if !d.bextParsed {
+		d.bextParsed = true
+		if d.hdr != nil && d.hdr.Bext != nil {
+			d.bext, d.bextErr = parseBext(d.hdr.Bext)
+		}
+	}
+	return d.bext, d.bextErr
+}
 
 // Read reads interleaved samples into p and returns how many bytes it wrote.
 //

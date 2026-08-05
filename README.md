@@ -60,11 +60,11 @@ Requires Go 1.26 or newer.
   laws are checked against both tools over all 256 codes.
 
 Not implemented: ADPCM and the other compressed format tags; and the metadata
-chunks (`LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`), including reading
-`bext` itself. Unknown chunks are skipped cleanly on read, so files carrying
-them decode normally, their metadata simply is not exposed. `bext` has a write
-path: `pcm.Config.Bext` writes a Broadcast Wave Format chunk; see
-[Encoding](#encoding).
+chunks (`LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`). Unknown chunks are
+skipped cleanly on read, so files carrying them decode normally, their metadata
+simply is not exposed. The exception is `bext`, which has both a write path
+(`pcm.Config.Bext`) and a read path (`pcm.Decoder.Bext`); see
+[Encoding](#encoding) and [Decoding](#decoding).
 
 ## Usage
 
@@ -114,9 +114,28 @@ cfg := wavpcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
 }
 ```
 
-Leaving `Bext` nil, its zero value, writes no `bext` chunk at all. `bext` is
-written only, not read back: decoding a file that carries one skips it like any
-other unrecognised chunk.
+Leaving `Bext` nil, its zero value, writes no `bext` chunk at all.
+
+A decoder reads the chunk back with `Decoder.Bext()`, which parses it into the
+same `Bext` type:
+
+```go
+d, _ := wavpcm.NewDecoder(r)
+if b, err := d.Bext(); err != nil {
+    // a bext chunk is present but malformed; the audio still decodes
+} else if b != nil {
+    fmt.Println(b.OriginationDate, b.TimeReference)
+}
+```
+
+`Bext()` returns `(nil, nil)` when the stream carries no bext chunk. A decoded
+`*Bext` can be set straight back on `Config.Bext` to re-encode it, so `bext`
+written by this library survives a read-modify-write. `Bext()` reads a chunk
+faithfully even when it carries values the encoder refuses (non-ASCII text, an
+unconventional date separator, control bytes in the coding history); re-encoding
+such a wild chunk then fails validation with the exact field at fault, rather
+than silently sanitising it. The one-shot `DecodeInterleaved` does not expose
+`bext`; use `NewDecoder` for metadata.
 
 ### Decoding
 

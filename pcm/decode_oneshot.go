@@ -93,13 +93,18 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // rejected, since a trailer is legal and common; only a stream that declares no
 // length, or one decoded under [WithIgnoreLength], hands back everything that
 // follows the header, as that option documents.
+//
+// This path exposes no bext chunk; a caller that wants the Broadcast Wave
+// metadata a stream carries opens it with [NewDecoder] and calls [Decoder.Bext].
 func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error) {
 	o, _ := decoderPool.Get().(*oneshotDecoder)
 	defer func() {
-		// Drop the caller's buffer before pooling. A pooled decoder is only
-		// dropped when the GC gets to it, and one still bound to b would keep a
-		// whole file alive for as long as it sits in the pool.
+		// Drop the caller's buffer and the parsed header before pooling. A
+		// pooled decoder is only dropped when the GC gets to it, and one still
+		// bound to b, or holding a captured bext chunk of up to the reader's
+		// cap, would keep that memory alive for as long as it sits in the pool.
 		o.r.Reset(nil)
+		o.d.hdr = nil
 		decoderPool.Put(o)
 	}()
 

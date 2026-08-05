@@ -45,8 +45,9 @@
 // Setting [Config.Bext] writes a bext (Broadcast Wave Format) chunk
 // immediately after fmt. Its zero value, nil, writes no bext chunk at all, so
 // a caller that never touches the field gets the same bytes it always did.
-// bext is written only: a decoder skips one on read like any other chunk it
-// does not recognise. See [Bext] for the fields it carries.
+// [Decoder.Bext] reads a stream's bext chunk back into the same [Bext] type, so
+// it survives a read-modify-write; the other metadata chunks are still skipped
+// on read. See [Bext] for the fields it carries.
 //
 // # Decoding
 //
