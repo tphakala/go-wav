@@ -192,10 +192,23 @@ library was written to eliminate.
 
 ```go
 if wav.Sniff(header) { /* RIFF, RF64 or BW64 */ }
+
+// Or, to dispatch on which flavour it is:
+if c, ok := wav.SniffContainer(header); ok {
+	switch c {
+	case wav.ContainerRIFF:
+		// plain RIFF, 32-bit sizes
+	case wav.ContainerRF64:
+		// RF64, 64-bit sizes
+	case wav.ContainerBW64:
+		// BW64, 64-bit sizes, Broadcast Wave
+	}
+}
 ```
 
 Twelve bytes are enough, and unlike a hand-rolled `RIFF` check it recognises
-RF64 and BW64.
+RF64 and BW64. `SniffContainer` reports the same verdict as `Sniff` and, when it
+is a WAV stream, which of the three magics the header carries.
 
 ## Errors
 

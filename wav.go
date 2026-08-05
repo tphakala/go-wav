@@ -344,15 +344,23 @@ func (si StreamInfo) Duration() time.Duration {
 // rather than panicking on a short slice.
 //
 // It exists so that callers dispatching on file type do not have to hand-roll
-// a magic check that forgets RF64 and BW64.
+// a magic check that forgets RF64 and BW64. [SniffContainer] answers the same
+// question and additionally reports which of the three magics it saw.
 func Sniff(b []byte) bool {
-	_, ok := sniffContainer(b)
+	_, ok := SniffContainer(b)
 	return ok
 }
 
-// sniffContainer reports the container flavour of a header, and whether the
-// header is a WAVE header at all.
-func sniffContainer(b []byte) (Container, bool) {
+// SniffContainer reports the container flavour of a header and whether b begins
+// with a RIFF, RF64 or BW64 WAVE header at all. Like [Sniff] it reads at most
+// the first twelve bytes, needs no allocation, and returns false rather than
+// panicking on a short slice. When ok is false the returned Container is
+// meaningless and must not be inspected; it is ContainerRIFF, the zero value.
+//
+// It is the companion to Sniff for a caller that dispatches on file type: Sniff
+// answers "is this a WAVE stream at all", SniffContainer additionally says
+// which of the three magics the header carries, without decoding it.
+func SniffContainer(b []byte) (Container, bool) {
 	if len(b) < headerSize {
 		return 0, false
 	}

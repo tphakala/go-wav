@@ -101,6 +101,67 @@ func TestSniffRejectsShortSlices(t *testing.T) {
 	}
 }
 
+// TestSniffContainer pins the container discrimination that Sniff throws away:
+// which of the three magics a header carries. The positive rows are the value a
+// caller dispatching on file type reads. The negative rows pin that ok is false
+// and that the returned Container is then the documented zero value, so a
+// partial match cannot leak a stale flavour through the false path.
+func TestSniffContainer(t *testing.T) {
+	tests := []struct {
+		name   string
+		b      []byte
+		want   wav.Container
+		wantOK bool
+	}{
+		{"nil slice", nil, wav.ContainerRIFF, false},
+		{"11 bytes, one short of the header", header(t, "RIFF", "WAVE")[:11], wav.ContainerRIFF, false},
+		{"RIFF/WAVE", header(t, "RIFF", "WAVE"), wav.ContainerRIFF, true},
+		{"RF64/WAVE", header(t, "RF64", "WAVE"), wav.ContainerRF64, true},
+		{"BW64/WAVE", header(t, "BW64", "WAVE"), wav.ContainerBW64, true},
+		{"RIFF magic, form type is not WAVE", header(t, "RIFF", "AVI "), wav.ContainerRIFF, false},
+		{"unknown magic, form type WAVE", header(t, "JUNK", "WAVE"), wav.ContainerRIFF, false},
+		// The same case-sensitivity tripwires TestSniff carries: a lowercase
+		// magic or form type is a different FOURCC, and the false path must then
+		// report the zero-value Container, not a near-miss flavour.
+		{"lowercase magic is not RIFF", header(t, "riff", "WAVE"), wav.ContainerRIFF, false},
+		{"lowercase form type is not WAVE", header(t, "RIFF", "wave"), wav.ContainerRIFF, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := wav.SniffContainer(tt.b)
+			if ok != tt.wantOK {
+				t.Errorf("SniffContainer(%q) ok = %v, want %v", tt.b, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("SniffContainer(%q) container = %v, want %v", tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSniffAgreesWithSniffContainer pins that Sniff's bool is exactly
+// SniffContainer's ok across the full table. Sniff is a thin wrapper today, so
+// this is trivially true now; the test is what fails if someone later gives
+// Sniff its own magic check that drifts from the one SniffContainer uses.
+func TestSniffAgreesWithSniffContainer(t *testing.T) {
+	cases := [][]byte{
+		nil,
+		header(t, "RIFF", "WAVE")[:11],
+		header(t, "RIFF", "WAVE"),
+		header(t, "RF64", "WAVE"),
+		header(t, "BW64", "WAVE"),
+		header(t, "RIFF", "AVI "),
+		header(t, "JUNK", "WAVE"),
+		header(t, "riff", "WAVE"),
+	}
+	for _, b := range cases {
+		_, ok := wav.SniffContainer(b)
+		if got := wav.Sniff(b); got != ok {
+			t.Errorf("Sniff(%q) = %v, but SniffContainer ok = %v", b, got, ok)
+		}
+	}
+}
+
 // TestStreamInfoBytesPerSample pins the ceiling division across every bit
 // depth the package supports, plus a width that is not a multiple of eight.
 // The contract is a storage width in whole bytes, so a bit depth that does not
