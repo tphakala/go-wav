@@ -7,6 +7,11 @@ package pcm
 // wrong cause.
 const MaxConvertBatch = maxConvertBatch
 
+// WriteToBufferSize exposes WriteTo's staging-buffer size to the pcm_test
+// package, so a test asserting the sink's write chunking derives the expected
+// block size from the constant instead of restating 65536.
+const WriteToBufferSize = writeToBufferSize
+
 // BextFixedSize exposes the width of a bext chunk's fixed body to the
 // pcm_test package, so a fuzz target can assert Serialize's output length
 // against the constant rather than restating 602.

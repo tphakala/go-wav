@@ -455,6 +455,168 @@ func TestDecoderWriteTo(t *testing.T) {
 	}
 }
 
+// TestDecoderWriteToFillsTheSinkWrites checks that WriteTo issues full
+// writeToBufferSize-sized writes to the sink even for a narrowing conversion,
+// whose per-Read result is bounded well below the buffer, by accumulating across
+// reads. The byte output must still equal a plain streamed decode.
+func TestDecoderWriteToFillsTheSinkWrites(t *testing.T) {
+	const wtbs = pcm.WriteToBufferSize
+	// float64 mono -> 8-bit is the worst narrowing: 8 source bytes per output
+	// byte, so a converting Read hands back only maxConvertBatch/8 at a time.
+	floatCfg := pcm.Config{SampleRate: 48000, BitDepth: 64, Channels: 1, Format: wav.SampleFormatFloat}
+	to8 := []pcm.Option{pcm.WithConvertTo(8)}
+
+	cases := []struct {
+		name   string
+		cfg    pcm.Config
+		opts   []pcm.Option
+		srcLen int
+		outLen int
+	}{
+		{"narrowing with tail", floatCfg, to8, (2*wtbs + 10000) * 8, 2*wtbs + 10000},
+		{"narrowing exact multiple", floatCfg, to8, (2 * wtbs) * 8, 2 * wtbs},
+		{"narrowing under one buffer", floatCfg, to8, (wtbs / 2) * 8, wtbs / 2},
+		{"pass-through", pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}, nil, 2*wtbs + 4096, 2*wtbs + 4096},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			file := encodeFixture(t, tc.cfg, pattern(tc.srcLen))
+
+			fresh, err := pcm.NewDecoder(bytes.NewReader(file), tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := io.ReadAll(fresh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(want) != tc.outLen {
+				t.Fatalf("fixture produced %d output bytes, test expects %d", len(want), tc.outLen)
+			}
+
+			d, err := pcm.NewDecoder(bytes.NewReader(file), tc.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := &recordingWriter{}
+			n, err := d.WriteTo(rec)
+			if err != nil {
+				t.Fatalf("WriteTo: %v", err)
+			}
+			if int64(rec.buf.Len()) != n || !bytes.Equal(rec.buf.Bytes(), want) {
+				t.Fatalf("WriteTo output differs from a streamed decode: n=%d buf=%d want=%d",
+					n, rec.buf.Len(), len(want))
+			}
+			if len(rec.lens) == 0 {
+				t.Fatal("WriteTo issued no writes for a non-empty stream")
+			}
+			for i, l := range rec.lens {
+				if l == 0 {
+					t.Errorf("write %d is zero-length", i)
+				}
+				if i < len(rec.lens)-1 && l != wtbs {
+					t.Errorf("write %d is %d bytes, want a full %d before the last", i, l, wtbs)
+				}
+			}
+			wantLast := tc.outLen % wtbs
+			if wantLast == 0 {
+				wantLast = wtbs
+			}
+			if last := rec.lens[len(rec.lens)-1]; last != wantLast {
+				t.Errorf("last write is %d bytes, want %d", last, wantLast)
+			}
+		})
+	}
+}
+
+// TestDecoderWriteToPropagatesWriteError checks that a sink error stops WriteTo
+// and is returned with the count the sink actually accepted, and that a sink
+// silently accepting less than it was given is reported as io.ErrShortWrite
+// rather than dropping bytes.
+func TestDecoderWriteToPropagatesWriteError(t *testing.T) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 64, Channels: 1, Format: wav.SampleFormatFloat}
+	file := encodeFixture(t, cfg, pattern((3*pcm.WriteToBufferSize)*8))
+
+	t.Run("sink error returned with the accepted count", func(t *testing.T) {
+		d, err := pcm.NewDecoder(bytes.NewReader(file), pcm.WithConvertTo(8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sentinel := errors.New("sink is full")
+		w := &failWriter{limit: pcm.WriteToBufferSize + 100, err: sentinel}
+		n, werr := d.WriteTo(w)
+		if !errors.Is(werr, sentinel) {
+			t.Fatalf("WriteTo error = %v, want the sink's sentinel", werr)
+		}
+		if n != w.limit {
+			t.Errorf("WriteTo reported %d bytes, want %d (what the sink accepted)", n, w.limit)
+		}
+	})
+
+	t.Run("silent short write becomes io.ErrShortWrite", func(t *testing.T) {
+		d, err := pcm.NewDecoder(bytes.NewReader(file), pcm.WithConvertTo(8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, werr := d.WriteTo(shortWriter{})
+		if !errors.Is(werr, io.ErrShortWrite) {
+			t.Fatalf("WriteTo error = %v, want io.ErrShortWrite", werr)
+		}
+		if n != int64(pcm.WriteToBufferSize-1) {
+			t.Errorf("WriteTo reported %d bytes, want %d", n, pcm.WriteToBufferSize-1)
+		}
+	})
+}
+
+// TestDecoderWriteToZeroLength checks that WriteTo on an empty stream returns
+// (0, nil) and issues no writes at all.
+func TestDecoderWriteToZeroLength(t *testing.T) {
+	file := encodeFixture(t, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}, nil)
+	d, err := pcm.NewDecoder(bytes.NewReader(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingWriter{}
+	n, err := d.WriteTo(rec)
+	if err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("WriteTo reported %d bytes for an empty stream, want 0", n)
+	}
+	if len(rec.lens) != 0 {
+		t.Errorf("WriteTo issued %d writes for an empty stream, want 0", len(rec.lens))
+	}
+}
+
+// TestDecoderWriteToPropagatesReadError checks that a non-EOF error from the
+// source surfaces from WriteTo, and that the audio read before it was flushed to
+// the sink rather than dropped: the rewritten loop must deliver read bytes
+// before it reports either outcome.
+func TestDecoderWriteToPropagatesReadError(t *testing.T) {
+	sentinel := errors.New("source failed mid-stream")
+	src := pattern(2 * pcm.WriteToBufferSize)
+	file := encodeFixture(t, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}, src)
+	// Serve the header and most of the data, then fail partway rather than end.
+	r := &errReader{data: file, at: len(file) - 20000, err: sentinel}
+
+	d, err := pcm.NewDecoder(r, pcm.WithIgnoreLength())
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	rec := &recordingWriter{}
+	n, werr := d.WriteTo(rec)
+	if !errors.Is(werr, sentinel) {
+		t.Fatalf("WriteTo error = %v, want the source's sentinel", werr)
+	}
+	if n == 0 {
+		t.Error("WriteTo flushed nothing before the read error; pre-error audio was dropped")
+	}
+	if int64(rec.buf.Len()) != n {
+		t.Errorf("WriteTo reported %d bytes but recorded %d", n, rec.buf.Len())
+	}
+}
+
 // TestDecoderSeekToFrame exercises seeking on a seekable source.
 func TestDecoderSeekToFrame(t *testing.T) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2}

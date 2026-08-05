@@ -189,6 +189,50 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// recordingWriter records the length of every Write and the bytes they carried,
+// so a test can assert both the chunking a WriterTo produced and that the bytes
+// are unchanged. countingWriter only totals, which cannot see the chunk sizes.
+type recordingWriter struct {
+	lens []int
+	buf  bytes.Buffer
+}
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	r.lens = append(r.lens, len(p))
+	return r.buf.Write(p)
+}
+
+// shortWriter writes one byte fewer than it is handed, with a nil error, to
+// exercise WriteTo's io.ErrShortWrite guard against a sink that silently accepts
+// less than it was given.
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return len(p) - 1, nil
+}
+
+// errReader serves data up to offset at, then returns err instead of ending
+// cleanly, so a test can drive a non-EOF read error into the decoder partway
+// through the stream.
+type errReader struct {
+	data []byte
+	pos  int
+	at   int
+	err  error
+}
+
+func (r *errReader) Read(p []byte) (int, error) {
+	if r.pos >= r.at {
+		return 0, r.err
+	}
+	n := copy(p, r.data[r.pos:min(r.pos+len(p), r.at)])
+	r.pos += n
+	return n, nil
+}
+
 // nonSeekReader hides an io.Seeker implementation from the decoder.
 type nonSeekReader struct{ r io.Reader }
 

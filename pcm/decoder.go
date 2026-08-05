@@ -42,10 +42,11 @@ const streamBufferSize = 64 << 10
 // independent of readBufferSize because here a larger block genuinely does
 // reduce the number of round trips.
 //
-// That holds for a pass-through stream, which fills it. A converting stream is
-// bounded by maxConvertBatch instead, so a narrowing conversion hands the sink
-// less than this per call and a larger buffer here would not change that; see
-// maxConvertBatch.
+// A converting Read is bounded by maxConvertBatch, so a narrowing conversion
+// returns less than this per call. WriteTo therefore keeps reading into the
+// buffer's remaining space until it is full or the stream ends before writing
+// to the sink, so the sink sees writes of this size for every conversion shape
+// rather than the shorter blocks a single converting Read would hand it.
 const writeToBufferSize = 64 << 10
 
 // maxConvertBatch bounds the source bytes a converting Read stages at once.
@@ -570,18 +571,38 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 }
 
 // WriteTo streams the whole of the remaining audio to w. It implements
-// io.WriterTo, so io.Copy drains a Decoder in one call.
+// io.WriterTo, so io.Copy drains a Decoder in one call. It issues writes of
+// 64 KiB, accumulating across reads so a narrowing conversion does not hand w
+// the short blocks a single converting Read returns.
 func (d *Decoder) WriteTo(w io.Writer) (int64, error) {
 	if d.err != nil {
 		return 0, d.err
 	}
 	buf := make([]byte, writeToBufferSize)
 	var total int64
+	filled := 0
 	for {
-		n, rerr := d.Read(buf)
-		if n > 0 {
-			written, werr := w.Write(buf[:n])
+		n, rerr := d.Read(buf[filled:])
+		filled += n
+		if rerr == nil && filled < len(buf) {
+			// Keep filling. A narrowing conversion returns less than the buffer
+			// holds per Read, so accumulating into the remainder is what keeps
+			// the sink's write size at writeToBufferSize. A flush resets filled
+			// to 0 first, so Read is never handed an empty slice.
+			continue
+		}
+		// The buffer is full or the stream ended: flush before reporting either
+		// outcome, so every byte read is delivered before an error surfaces.
+		if filled > 0 {
+			written, werr := w.Write(buf[:filled])
 			total += int64(written)
+			if werr == nil && written < filled {
+				// A writer that accepts less than it was given without saying so
+				// would otherwise silently drop buf[written:filled]; io.Copy
+				// guards the same case.
+				werr = io.ErrShortWrite
+			}
+			filled = 0
 			if werr != nil {
 				return total, werr
 			}
