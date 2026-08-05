@@ -13,8 +13,10 @@ import (
 )
 
 // headKeep is how many leading bytes the counting sinks retain. It must cover
-// the largest header this package emits, with room to spare.
-const headKeep = 512
+// the largest header this package emits, with room to spare: a ds64
+// reservation plus an extensible fmt chunk plus a bext chunk, whose 602-byte
+// fixed body alone is already wider than the old 512-byte budget.
+const headKeep = 1024
 
 // chunkSpan records where a chunk payload begins and what its size field says.
 type chunkSpan struct {

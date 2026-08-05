@@ -3,6 +3,7 @@ package pcm_test
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 
 	wav "github.com/tphakala/go-wav"
@@ -209,6 +210,75 @@ func FuzzRoundTrip(f *testing.F) {
 		}
 		if !bytes.Equal(got, payload) {
 			t.Fatalf("payload did not survive: got %d bytes want %d", len(got), len(payload))
+		}
+	})
+}
+
+// bextDescriptionWidth is Bext.Description's wire width, restated here the
+// same way rf64_test.go and encoder_test.go restate riff wire constants
+// locally rather than reaching into internal/riff, since the point of a
+// black box test is not to trust the package under test for its own layout.
+const bextDescriptionWidth = 256
+
+// FuzzBext checks that Bext.Validate and Bext.Serialize never panic on
+// arbitrary field values, since a Config.Bext built from attacker controlled
+// strings (metadata read from an untrusted source and forwarded into a
+// recording) must not be able to crash a program that calls NewEncoder. It
+// also checks that whenever Validate accepts a descriptor, Serialize's output
+// has exactly the length the fixed body plus CodingHistory implies, and that
+// Description and CodingHistory land at their documented offsets rather than
+// bleeding into a neighbouring field.
+func FuzzBext(f *testing.F) {
+	f.Add("field recording, site 4", "recorder-01", "REF0001",
+		"2026-08-05", "09:15:30", "A=PCM,F=48000,W=16,M=mono\r\n")
+	// One byte over the Description width: Validate must refuse it rather
+	// than let Serialize truncate it silently.
+	f.Add(strings.Repeat("x", bextDescriptionWidth+1), "", "", "", "", "")
+	// A CodingHistory carrying the CR LF row break the format allows.
+	f.Add("", "", "", "", "", "row one\r\nrow two\r\n")
+	// Junk: control bytes, non-ASCII, and a garbage date/time shape.
+	f.Add("\x00\x07\x1f", "café", "\x1b[31m", "not-a-date", "25:99:99", "\x00junk\x07")
+
+	f.Fuzz(func(t *testing.T, description, originator, originatorReference,
+		originationDate, originationTime, codingHistory string,
+	) {
+		b := &pcm.Bext{
+			Description:         description,
+			Originator:          originator,
+			OriginatorReference: originatorReference,
+			OriginationDate:     originationDate,
+			OriginationTime:     originationTime,
+			CodingHistory:       codingHistory,
+		}
+
+		// Neither call may panic on any input: a panic here is a crash a
+		// caller forwarding untrusted metadata into Config.Bext could trigger.
+		err := b.Validate("fuzz")
+		body := b.Serialize()
+
+		if err != nil {
+			return
+		}
+		if want := pcm.BextFixedSize + len(codingHistory); len(body) != want {
+			t.Fatalf("Serialize() = %d bytes for an accepted Bext, want %d", len(body), want)
+		}
+		// Description starts at offset 0. Validate having accepted it means
+		// it is printable ASCII with no NUL, so the field this exact prefix
+		// occupies cannot itself contain the padding checked just below.
+		if got := string(body[:len(description)]); got != description {
+			t.Fatalf("Description at offset 0: got %q want %q", got, description)
+		}
+		// The bytes between the end of Description and the start of the next
+		// field must still be NUL padding, not a leaked byte of Originator or
+		// beyond: proof Description's copy respects its 256 byte width.
+		for i := len(description); i < bextDescriptionWidth; i++ {
+			if body[i] != 0 {
+				t.Fatalf("byte %d, in the Description padding, is %#02x, want 0", i, body[i])
+			}
+		}
+		// CodingHistory starts right after the fixed 602 byte body.
+		if got := string(body[pcm.BextFixedSize:]); got != codingHistory {
+			t.Fatalf("CodingHistory at offset %d: got %q want %q", pcm.BextFixedSize, got, codingHistory)
 		}
 	})
 }

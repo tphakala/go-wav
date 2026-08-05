@@ -30,6 +30,13 @@ type HeaderConfig struct {
 	// Frames is the inter-channel frame count matching DataSize, used for
 	// the ds64 sampleCount and the fact chunk.
 	Frames uint64
+
+	// Bext is the serialized body of a bext (Broadcast Wave Format) chunk to
+	// write immediately after fmt, or nil to write none. This package treats
+	// it as an opaque payload; the pcm package is the one that knows the
+	// bext layout and validates its fields, which is what keeps this package
+	// format agnostic. A nil or empty slice writes no bext chunk at all.
+	Bext []byte
 }
 
 // Layout is an emitted header plus the offsets a caller needs in order to
@@ -143,6 +150,21 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 	var err error
 	if buf, err = appendFmt(buf, cfg.Format); err != nil {
 		return nil, err
+	}
+
+	// A bext chunk, when present, sits right after fmt and before fact or
+	// data. It carries no offset in Layout because it is never patched: the
+	// caller who wants one supplies the whole payload up front.
+	if len(cfg.Bext) > 0 {
+		bextSize, err := u32("bext chunk size", int64(len(cfg.Bext)))
+		if err != nil {
+			return nil, err
+		}
+		buf = appendChunkHeader(buf, idBext, bextSize)
+		buf = append(buf, cfg.Bext...)
+		if len(cfg.Bext)%2 != 0 {
+			buf = append(buf, 0)
+		}
 	}
 
 	// The fact chunk is mandatory for every non-PCM encoding, which for this
@@ -267,6 +289,9 @@ func HeaderLen(cfg HeaderConfig) int64 {
 		n += int64(DS64ChunkSize)
 	}
 	n += int64(ChunkHeaderSize) + int64(fmtPayloadLen(cfg.Format))
+	if len(cfg.Bext) > 0 {
+		n += int64(ChunkHeaderSize) + padded(int64(len(cfg.Bext)))
+	}
 	if cfg.Format.Format == wav.SampleFormatFloat {
 		n += int64(ChunkHeaderSize) + int64(factPayloadSize)
 	}
