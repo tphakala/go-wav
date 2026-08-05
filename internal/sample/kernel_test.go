@@ -250,17 +250,17 @@ func TestConvertIntToIntMatchesBlocked(t *testing.T) {
 // reslice is deleted.
 //
 // Recovering from a panic is not by itself enough to pin it, which is the trap
-// an earlier version of this test fell into. Delete the sizing reslice and
-// three of the four kernels still panic, on the per-element access that runs
-// off the end partway through the loop, which is the exact failure the guard
-// exists to prevent; only convert8to16 changes observably, because it ranges
-// over src and so quietly converts fewer samples than the destination holds.
-// What separates a guarded kernel from an unguarded one is where the
-// destination stands when the panic arrives. The sizing reslice runs before the
-// loop, so dst is still untouched; a per-element access panics with the leading
-// samples already written. The source below is therefore filled with a non-zero
-// pattern and dst is checked to be still all zero after the recover, and that
-// is what makes all four kernels fail if their sizing reslice is deleted.
+// an earlier version of this test fell into. Delete the sizing reslice and no
+// kernel panics mid-loop: the three that consume their slices stop on the
+// len(src) >= srcW && len(dst) >= dstW condition, and convert8to16 ranges over
+// the shorter src, so each quietly converts fewer samples than the destination
+// holds. The guard's absence then surfaces here as a missing panic, caught by
+// the recover() == nil arm below, which is what catches a deleted reslice now.
+// The sizing reslice, in contrast, runs before the loop, so a source too short
+// for it panics with dst still untouched. The source below is filled with a
+// non-zero pattern and dst is checked to be all zero after the recover, which
+// pins that the panic fires before any sample is written: the guard is the
+// pre-loop reslice, not something inside the loop.
 //
 // It does not pin the third index of those reslices. The upper bound of a slice
 // expression is checked against capacity whether or not a capacity is given, so
