@@ -15,7 +15,7 @@ import (
 )
 
 // testEncoderChunkSizeCase is the body of TestEncoderAwkwardChunkSizes.
-func testEncoderChunkSizeCase(t *testing.T, cc struct {
+func testEncoderChunkSizeCase(t *testing.T, cc *struct {
 	name string
 	cfg  pcm.Config
 }, chunk int) {
@@ -92,7 +92,7 @@ func TestEncoderAwkwardChunkSizes(t *testing.T) {
 	for _, cc := range configs {
 		for _, chunk := range chunkSizes {
 			t.Run(fmt.Sprintf("%s/chunk %d", cc.name, chunk), func(t *testing.T) {
-				testEncoderChunkSizeCase(t, cc, chunk)
+				testEncoderChunkSizeCase(t, &cc, chunk)
 			})
 		}
 	}

@@ -82,8 +82,16 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config, framesKnown bool) er
 		return e.invalidate(err)
 	}
 
+	// Serialized once here rather than inside plan or BuildHeader, since both
+	// need its length: plan to decide whether the stream still fits plain
+	// RIFF once the bext chunk is counted, BuildHeader to place the bytes.
+	var bextBody []byte
+	if cfg.Bext != nil {
+		bextBody = cfg.Bext.serialize()
+	}
+
 	ws, _ := w.(io.WriteSeeker)
-	container, reserve, err := plan(op, cfg, ws != nil, framesKnown)
+	container, reserve, err := plan(op, cfg, bextBody, ws != nil, framesKnown)
 	if err != nil {
 		return e.invalidate(err)
 	}
@@ -112,6 +120,7 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config, framesKnown bool) er
 		ReserveDS64: reserve,
 		DataSize:    dataSize,
 		Frames:      cfg.TotalFrames,
+		Bext:        bextBody,
 	})
 	if err != nil {
 		return e.invalidate(err)
@@ -128,7 +137,12 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config, framesKnown bool) er
 
 // plan resolves the container to write and whether to reserve ds64 space,
 // rejecting the one combination that cannot produce a correct file.
-func plan(op string, cfg Config, seekable, framesKnown bool) (wav.Container, bool, error) {
+//
+// bextBody is the already-serialized bext chunk, or nil, and is threaded
+// through to fitsPlainRIFF so the RF64Auto decision counts those extra header
+// bytes rather than being made against a header shorter than the one that
+// will actually be written.
+func plan(op string, cfg Config, bextBody []byte, seekable, framesKnown bool) (wav.Container, bool, error) {
 	switch cfg.RF64 {
 	case RF64Always:
 		if !seekable && !framesKnown {
@@ -149,7 +163,7 @@ func plan(op string, cfg Config, seekable, framesKnown bool) (wav.Container, boo
 			if err != nil {
 				return 0, false, err
 			}
-			if !fitsPlainRIFF(cfg, size) {
+			if !fitsPlainRIFF(cfg, bextBody, size) {
 				return wav.ContainerRF64, false, nil
 			}
 			return wav.ContainerRIFF, false, nil
@@ -169,10 +183,11 @@ func plan(op string, cfg Config, seekable, framesKnown bool) (wav.Container, boo
 // The header length is computed rather than built. Building one here cost two
 // allocations and roughly doubled the setup time of every encoder with a
 // declared length, to answer a question that is pure arithmetic.
-func fitsPlainRIFF(cfg Config, dataSize int64) bool {
+func fitsPlainRIFF(cfg Config, bextBody []byte, dataSize int64) bool {
 	return riff.FitsPlainRIFF(riff.HeaderConfig{
 		Format:    formatOf(cfg),
 		Container: wav.ContainerRIFF,
+		Bext:      bextBody,
 	}, dataSize)
 }
 

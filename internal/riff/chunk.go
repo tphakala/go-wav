@@ -19,6 +19,7 @@ const (
 	idDS64 = "ds64"
 	idFact = "fact"
 	idJUNK = "JUNK"
+	idBext = "bext"
 )
 
 // Structural sizes fixed by the format.

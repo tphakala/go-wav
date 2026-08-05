@@ -109,6 +109,15 @@ type Config struct {
 	// caller wrote a different number of frames. This mirrors
 	// Config.TotalSamples in the sibling go-flac library.
 	TotalFrames uint64
+
+	// Bext, when non-nil, writes a bext (Broadcast Wave Format) chunk
+	// immediately after fmt, ahead of fact and data. The zero value, nil,
+	// writes no bext chunk at all, and the encoder's output is then
+	// byte-for-byte identical to what it was before this field existed.
+	//
+	// See [Bext] for the fields it carries and the wire width each one is
+	// held to.
+	Bext *Bext
 }
 
 // bytesPerSample is the storage width of a single-channel sample in bytes.
@@ -170,6 +179,11 @@ func (c Config) validate(op string) error {
 	case RF64Auto, RF64Never, RF64Always:
 	default:
 		return fmt.Errorf("go-wav/pcm: %s: unknown RF64 mode %d", op, c.RF64)
+	}
+	if c.Bext != nil {
+		if err := c.Bext.validate(op); err != nil {
+			return err
+		}
 	}
 	return nil
 }

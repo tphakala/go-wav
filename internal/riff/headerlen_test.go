@@ -26,37 +26,51 @@ func TestHeaderLenMatchesBuildHeader(t *testing.T) {
 	// Only the containers BuildHeader will emit; BW64 is read only.
 	containers := []wav.Container{wav.ContainerRIFF, wav.ContainerRF64}
 
+	// bext payloads: none, an even-length body, and an odd-length one that
+	// forces the pad byte HeaderLen must account for via padded().
+	bextCases := []struct {
+		name string
+		body []byte
+	}{
+		{"noBext", nil},
+		{"evenBext", append(make([]byte, 602), []byte("hist")...)},
+		{"oddBext", append(make([]byte, 602), []byte("odd")...)},
+	}
+
 	for _, f := range formats {
 		for _, ch := range []int{1, 2, 3, 6, 8} {
 			for _, c := range containers {
 				for _, reserve := range []bool{false, true} {
 					for _, ext := range []bool{false, true} {
-						cfg := HeaderConfig{
-							Format: Format{
-								SampleRate: 48000,
-								Channels:   ch,
-								BitDepth:   f.bits,
-								Format:     f.format,
-								Extensible: ext,
-							},
-							Container:   c,
-							ReserveDS64: reserve,
+						for _, bc := range bextCases {
+							cfg := HeaderConfig{
+								Format: Format{
+									SampleRate: 48000,
+									Channels:   ch,
+									BitDepth:   f.bits,
+									Format:     f.format,
+									Extensible: ext,
+								},
+								Container:   c,
+								ReserveDS64: reserve,
+								Bext:        bc.body,
+							}
+							name := fmt.Sprintf("%s%d_%dch_%s_reserve%v_ext%v_%s",
+								f.format, f.bits, ch, c, reserve, ext, bc.name)
+							t.Run(name, func(t *testing.T) {
+								lay, err := BuildHeader(cfg)
+								if err != nil {
+									t.Fatalf("BuildHeader: %v", err)
+								}
+								want := int64(len(lay.Bytes))
+								if got := HeaderLen(cfg); got != want {
+									t.Errorf("HeaderLen = %d, BuildHeader emitted %d bytes", got, want)
+								}
+								if lay.DataOffset != want {
+									t.Errorf("DataOffset = %d, want %d", lay.DataOffset, want)
+								}
+							})
 						}
-						name := fmt.Sprintf("%s%d_%dch_%s_reserve%v_ext%v",
-							f.format, f.bits, ch, c, reserve, ext)
-						t.Run(name, func(t *testing.T) {
-							lay, err := BuildHeader(cfg)
-							if err != nil {
-								t.Fatalf("BuildHeader: %v", err)
-							}
-							want := int64(len(lay.Bytes))
-							if got := HeaderLen(cfg); got != want {
-								t.Errorf("HeaderLen = %d, BuildHeader emitted %d bytes", got, want)
-							}
-							if lay.DataOffset != want {
-								t.Errorf("DataOffset = %d, want %d", lay.DataOffset, want)
-							}
-						})
 					}
 				}
 			}

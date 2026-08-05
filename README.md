@@ -60,9 +60,11 @@ Requires Go 1.26 or newer.
   laws are checked against both tools over all 256 codes.
 
 Not implemented: ADPCM and the other compressed format tags; and the metadata
-chunks (`bext`, `LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`). Unknown chunks
-are skipped cleanly on read, so files carrying them decode normally, their
-metadata simply is not exposed.
+chunks (`LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`), including reading
+`bext` itself. Unknown chunks are skipped cleanly on read, so files carrying
+them decode normally, their metadata simply is not exposed. `bext` has a write
+path: `pcm.Config.Bext` writes a Broadcast Wave Format chunk; see
+[Encoding](#encoding).
 
 ## Usage
 
@@ -96,6 +98,25 @@ cfg := wavpcm.Config{SampleRate: 96000, BitDepth: 32, Channels: 2,
 A plain `io.Writer` is always accepted. When the sink also implements
 `io.WriteSeeker` the header is patched at `Close`, which is what allows a stream
 to become RF64 once it outgrows plain RIFF.
+
+Setting `Config.Bext` writes a `bext` (Broadcast Wave Format) chunk right after
+`fmt`:
+
+```go
+cfg := wavpcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
+    Bext: &wavpcm.Bext{
+        Description:     "field recording, site 4",
+        Originator:      "recorder-01",
+        OriginationDate: "2026-08-05",
+        OriginationTime: "09:15:30",
+        TimeReference:    123456789, // samples since midnight of OriginationDate
+    },
+}
+```
+
+Leaving `Bext` nil, its zero value, writes no `bext` chunk at all. `bext` is
+written only, not read back: decoding a file that carries one skips it like any
+other unrecognised chunk.
 
 ### Decoding
 

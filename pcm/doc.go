@@ -42,6 +42,12 @@
 // The encoder never writes a size field it knows to be wrong. Where a correct
 // size cannot be produced it reports [github.com/tphakala/go-wav.ErrTooLarge].
 //
+// Setting [Config.Bext] writes a bext (Broadcast Wave Format) chunk
+// immediately after fmt. Its zero value, nil, writes no bext chunk at all, so
+// a caller that never touches the field gets the same bytes it always did.
+// bext is written only: a decoder skips one on read like any other chunk it
+// does not recognise. See [Bext] for the fields it carries.
+//
 // # Decoding
 //
 // The decoder is an [io.Reader] and an [io.WriterTo] over the data chunk. By
