@@ -257,7 +257,16 @@ type StreamInfo struct {
 	DataSizeKnown bool
 }
 
-// BytesPerSample is the storage width of a single-channel sample in bytes.
+// BytesPerSample is the on-disk storage width of a single-channel sample in
+// bytes. It rounds up: a bit depth that does not fill its last byte still costs
+// that byte, so a 20-bit sample is 3 bytes. It is the per-channel container
+// width a frame's nBlockAlign is built from (nBlockAlign is this times Channels;
+// see [StreamInfo.BytesPerFrame]), and it answers for any depth.
+//
+// That makes it a different question from the width the pcm conversion path
+// derives, which returns 0 for a depth its kernels cannot store. The two are
+// deliberately kept apart: do not route this through the conversion-path width,
+// or a 20-bit frame would report 0 bytes rather than the 3 it occupies.
 //
 //nolint:gocritic // a value receiver is the right shape for a value type callers receive by value.
 func (si StreamInfo) BytesPerSample() int {

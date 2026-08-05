@@ -5,6 +5,7 @@ import (
 
 	wav "github.com/tphakala/go-wav"
 	"github.com/tphakala/go-wav/internal/riff"
+	"github.com/tphakala/go-wav/internal/sample"
 )
 
 // RF64Mode selects how an [Encoder] handles the 4 GiB limit of the 32-bit RIFF
@@ -120,9 +121,12 @@ type Config struct {
 	Bext *Bext
 }
 
-// bytesPerSample is the storage width of a single-channel sample in bytes.
+// bytesPerSample is the storage width of a single-channel sample in bytes. It
+// routes through [sample.BytesPerSample] so this package derives a width in one
+// place; the result is 0 for a depth the conversion path does not store, which
+// a validated [Config] never carries here.
 func (c Config) bytesPerSample() int64 {
-	return int64((c.BitDepth + 7) / 8)
+	return int64(sample.BytesPerSample(c.BitDepth))
 }
 
 // bytesPerFrame is the storage width of one inter-channel frame in bytes, the

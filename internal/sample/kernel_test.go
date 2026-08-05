@@ -95,7 +95,7 @@ func extremeSamples(bits int) []byte {
 // the next run instead of moving.
 func diffSource(t *testing.T, pattern string, bits, n int) []byte {
 	t.Helper()
-	w := bytesPerSample(bits)
+	w := BytesPerSample(bits)
 	if w == 0 {
 		t.Fatalf("diffSource: unsupported bit depth %d", bits)
 	}
@@ -151,9 +151,9 @@ func reportDiff(t *testing.T, what string, got, want, src []byte, srcBits, dstBi
 		return
 	}
 	t.Fatalf("%s %d->%d, %d samples, %d trailing bytes: first difference at byte %d (sample %d): got %#v, want %#v (src sample %#v)",
-		what, srcBits, dstBits, n, trailing, i, i/bytesPerSample(dstBits),
+		what, srcBits, dstBits, n, trailing, i, i/BytesPerSample(dstBits),
 		got[i:min(i+8, len(got))], want[i:min(i+8, len(want))],
-		src[(i/bytesPerSample(dstBits))*bytesPerSample(srcBits):min((i/bytesPerSample(dstBits)+2)*bytesPerSample(srcBits), len(src))])
+		src[(i/BytesPerSample(dstBits))*BytesPerSample(srcBits):min((i/BytesPerSample(dstBits)+2)*BytesPerSample(srcBits), len(src))])
 }
 
 // TestSinglePassKernelsMatchBlocked runs each specialised kernel directly
@@ -169,7 +169,7 @@ func TestSinglePassKernelsMatchBlocked(t *testing.T) {
 			for _, pattern := range diffPatterns {
 				for _, n := range diffLengths {
 					for _, trailing := range diffTrailing {
-						if trailing >= bytesPerSample(k.srcBits) {
+						if trailing >= BytesPerSample(k.srcBits) {
 							continue
 						}
 						src := withTrailing(diffSource(t, pattern, k.srcBits, n), trailing)
@@ -230,7 +230,7 @@ func TestConvertIntToIntMatchesBlocked(t *testing.T) {
 				for _, pattern := range diffPatterns {
 					for _, n := range diffLengths {
 						for _, trailing := range diffTrailing {
-							if trailing >= bytesPerSample(srcBits) {
+							if trailing >= BytesPerSample(srcBits) {
 								continue
 							}
 							checkIntPairCase(t, pattern, srcBits, dstBits, n, trailing)
@@ -273,8 +273,8 @@ func TestKernelsPanicOnShortSource(t *testing.T) {
 	for _, k := range kernelPairs {
 		t.Run(fmt.Sprintf("%dto%d", k.srcBits, k.dstBits), func(t *testing.T) {
 			t.Parallel()
-			dst := make([]byte, samples*bytesPerSample(k.dstBits))
-			need := samples * bytesPerSample(k.srcBits)
+			dst := make([]byte, samples*BytesPerSample(k.dstBits))
+			need := samples * BytesPerSample(k.srcBits)
 			// One byte short of a whole destination's worth, and filled with a
 			// pattern no kernel can turn into an all-zero destination sample,
 			// so a write that happened before the panic is visible below.

@@ -487,8 +487,8 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	if d.remaining == 0 {
 		return 0, io.EOF
 	}
-	srcWidth := (d.info.SourceBitDepth + 7) / 8
-	dstWidth := (d.convert + 7) / 8
+	srcWidth := sample.BytesPerSample(d.info.SourceBitDepth)
+	dstWidth := sample.BytesPerSample(d.convert)
 	if srcWidth <= 0 || dstWidth <= 0 {
 		return 0, fmt.Errorf("go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}

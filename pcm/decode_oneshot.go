@@ -151,8 +151,8 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	// trailing fragment shorter than one stored sample cannot be converted;
 	// sample.Convert ignores it, which is the same thing [Decoder.Read] does
 	// when a source runs out mid-sample.
-	srcWidth := (d.info.SourceBitDepth + 7) / 8
-	dstWidth := (d.convert + 7) / 8
+	srcWidth := sample.BytesPerSample(d.info.SourceBitDepth)
+	dstWidth := sample.BytesPerSample(d.convert)
 	if srcWidth <= 0 || dstWidth <= 0 {
 		return wav.StreamInfo{}, nil, fmt.Errorf(
 			"go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
