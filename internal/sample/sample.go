@@ -226,10 +226,13 @@ func convertIntToIntBlocked(dst, src []byte, srcBits, dstBits int) {
 // position in the destination, with no intermediate value, no staging buffer
 // and no per-block call. That collapse is available for all sixteen pairs, but
 // only these four are worth the code, because between them they cover the
-// overwhelming majority of real conversions. They measure 30 to 54 percent
-// faster than the blocked path, which stays as the fallback for everything
-// else. Each kernel states its own derivation, and the differential test
-// compares all four against the blocked path rather than against themselves.
+// overwhelming majority of real conversions. They measured 30 to 54 percent
+// faster than the blocked path when they were added (#13); issue #17 then
+// rewrote the three that read the source by offset to consume their slices, so
+// the compiler drops every in-loop bounds check (see the kernel block comment
+// below). The blocked path stays as the fallback for everything else. Each
+// kernel states its own derivation, and the differential test compares all four
+// against the blocked path rather than against themselves.
 func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 	switch {
 	case srcBits == 8 && dstBits == 16:
@@ -245,35 +248,37 @@ func convertIntToInt(dst, src []byte, srcBits, dstBits int) {
 	}
 }
 
-// Every kernel below drives its loop off the destination, as the blocked path
-// does, and reslices the source to the extent that implies, with an explicit
-// capacity. That reslice is the kernel's one guard: a source too short for the
-// destination fails on it, at a known line, rather than being read past the end
-// sample by sample. What "too short" means there is short capacity, not short
-// length, because the upper bound of a slice expression is checked against
-// capacity. It is nevertheless a real guard as these kernels are wired up,
-// because Convert caps src with the three-index form before dispatching, which
-// makes capacity and length equal; a caller reaching a kernel directly with a
-// short length inside a longer capacity is outside the contract and this does
-// not catch it. The explicit capacity on those reslices is not what raises the
-// panic, since the upper bound is checked against capacity with or without it;
-// it is there so that a later reslice inside a kernel cannot extend back past
-// the sizing one.
+// Every kernel below sizes itself from the destination, as the blocked path
+// does: n = len(dst)/W samples, with the source resliced to the extent that
+// implies and an explicit capacity. That reslice is the kernel's one guard: a
+// source too short for the destination fails on it, at a known line, rather
+// than being read past the end sample by sample. What "too short" means there
+// is short capacity, not short length, because the upper bound of a slice
+// expression is checked against capacity. It is nevertheless a real guard as
+// these kernels are wired up, because Convert caps src with the three-index
+// form before dispatching, which makes capacity and length equal; a caller
+// reaching a kernel directly with a short length inside a longer capacity is
+// outside the contract and this does not catch it. The explicit capacity on
+// those reslices is not what raises the panic, since the upper bound is checked
+// against capacity with or without it; it is there so that a later reslice
+// inside a kernel cannot extend back past the sizing one.
 //
-// What the sizing reslice does not do is remove the per-element bounds checks,
-// however plausible that sounds. Under -d=ssa/check_bce/debug=1 every kernel
-// still emits an IsSliceInBounds for every reslice it takes inside the loop:
-// the dst[i*N:] all four write through, the src[i*M:] the three that read the
-// source by offset take (convert8to16 does not, because it ranges over src
-// instead), and in the two 24-bit kernels the [:3] window on top of those. To
-// the reslices add an IsInBounds per inlined encoding/binary helper, which is
-// one in three of the kernels and two in convert16to32, where a Uint16 read
-// feeds a PutUint32 write. The one place the slicing does buy something is that
-// window: inside an explicit [:3], the reads of b[0], b[1] and b[2] emit
-// nothing at all, so it costs one check on itself and nothing further per byte.
-// None of this is amd64-specific: the flag's output for this package is
-// byte-identical under GOARCH=amd64 and GOARCH=arm64. Re-run it before
-// asserting otherwise.
+// The three kernels below that read the source by offset consume both slices
+// rather than index from a counter: each iteration reslices src and dst forward
+// by one sample's worth, so the loop condition len(src) >= srcW && len(dst) >=
+// dstW hands the compiler an induction variable it can prove every access
+// against. Under -d=ssa/check_bce/debug=1 they emit exactly their two setup
+// IsSliceInBounds, the sizing reslices, and nothing inside the loop; the
+// compound condition, not a per-element check, is what carries the proofs.
+// Conditioning on one length alone would not remove them all, because the
+// compiler cannot relate len(src) to len(dst), so the far side's check survives.
+//
+// convert8to16 is the exception, left indexing dst from a range over src.
+// Ranging already gives it a clean induction variable, and the consumption form
+// measured slower for it (issue #17), so it keeps its two per-iteration dst-side
+// checks rather than trade them for a slower loop. None of this is
+// amd64-specific: the flag's output for this package is byte-identical under
+// GOARCH=amd64 and GOARCH=arm64. Re-run it before asserting otherwise.
 
 // convert8to16 widens biased 8-bit PCM to signed 16-bit.
 //
@@ -300,8 +305,10 @@ func convert16to32(dst, src []byte) {
 	n := len(dst) / 4
 	src = src[: n*2 : n*2]
 	dst = dst[: n*4 : n*4]
-	for i := range n {
-		binary.LittleEndian.PutUint32(dst[i*4:], uint32(binary.LittleEndian.Uint16(src[i*2:]))<<16)
+	for len(src) >= 2 && len(dst) >= 4 {
+		binary.LittleEndian.PutUint32(dst, uint32(binary.LittleEndian.Uint16(src))<<16)
+		src = src[2:]
+		dst = dst[4:]
 	}
 }
 
@@ -314,10 +321,11 @@ func convert24to32(dst, src []byte) {
 	n := len(dst) / 4
 	src = src[: n*3 : n*3]
 	dst = dst[: n*4 : n*4]
-	for i := range n {
-		b := src[i*3:][:3]
-		u := uint32(b[0])<<8 | uint32(b[1])<<16 | uint32(b[2])<<24
-		binary.LittleEndian.PutUint32(dst[i*4:], u)
+	for len(src) >= 3 && len(dst) >= 4 {
+		u := uint32(src[0])<<8 | uint32(src[1])<<16 | uint32(src[2])<<24
+		binary.LittleEndian.PutUint32(dst, u)
+		src = src[3:]
+		dst = dst[4:]
 	}
 }
 
@@ -331,9 +339,10 @@ func convert24to16(dst, src []byte) {
 	n := len(dst) / 2
 	src = src[: n*3 : n*3]
 	dst = dst[: n*2 : n*2]
-	for i := range n {
-		b := src[i*3:][:3]
-		binary.LittleEndian.PutUint16(dst[i*2:], uint16(b[2])<<8|uint16(b[1]))
+	for len(src) >= 3 && len(dst) >= 2 {
+		binary.LittleEndian.PutUint16(dst, uint16(src[2])<<8|uint16(src[1]))
+		src = src[3:]
+		dst = dst[2:]
 	}
 }
 
