@@ -109,7 +109,7 @@ cfg := wavpcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
         Originator:      "recorder-01",
         OriginationDate: "2026-08-05",
         OriginationTime: "09:15:30",
-        TimeReference:    123456789, // samples since midnight of OriginationDate
+        TimeReference:   123456789, // samples since midnight of OriginationDate
     },
 }
 ```

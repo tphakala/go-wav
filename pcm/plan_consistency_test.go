@@ -29,6 +29,23 @@ func TestPlanAndCheckCapacityAgreeOnHeaderLength(t *testing.T) {
 	// were counted in one place and not the other.
 	bext := &Bext{Description: "plan consistency fixture", CodingHistory: "A=PCM,F=48000,W=16,M=mono"}
 
+	// A declared size that sits exactly at the RF64 boundary the bext chunk
+	// itself creates: it fits the 32-bit RIFF budget of a header that never
+	// counts the bext bytes, but not of the real, longer header that does.
+	// The other bext cases below use a TotalFrames so small that both a
+	// correct and a mis-wired header length agree it fits plain RIFF, which
+	// would leave a reverted fitsPlainRIFF(cfg, bextBody, size) ->
+	// fitsPlainRIFF(cfg, nil, size) undetected. This one does not.
+	boundaryCfg := Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
+	plainHeaderLen := riff.HeaderLen(riff.HeaderConfig{
+		Format:    formatOf(boundaryCfg),
+		Container: wav.ContainerRIFF,
+	})
+	const maxU32 = int64(1)<<32 - 1
+	boundaryBytes := maxU32 - plainHeaderLen + 8
+	boundaryBytes -= boundaryBytes % 2          // a whole frame at 16-bit mono
+	boundaryFrames := uint64(boundaryBytes / 2) //nolint:gosec // G115: boundaryBytes is bounded well under maxU32.
+
 	cases := []struct {
 		name     string
 		cfg      Config
@@ -47,6 +64,8 @@ func TestPlanAndCheckCapacityAgreeOnHeaderLength(t *testing.T) {
 			TotalFrames: 1000, Bext: bext}, false},
 		{"never with bext", Config{SampleRate: 48000, BitDepth: 24, Channels: 2,
 			RF64: RF64Never, Bext: bext}, true},
+		{"auto bext pushes exactly at the boundary", Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
+			TotalFrames: boundaryFrames, Bext: bext}, true},
 	}
 
 	for _, tc := range cases {

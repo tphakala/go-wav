@@ -153,6 +153,49 @@ func TestBextValidateASCII(t *testing.T) {
 	}
 }
 
+// TestBextCodingHistoryPermitsCRLF checks the one deliberate relaxation from
+// checkASCII: EBU Tech 3285 defines CodingHistory as one row per transcoding
+// step, each terminated by CR then LF, so those two bytes must be accepted
+// there even though every other control byte, and every other free text
+// field, still rejects them.
+func TestBextCodingHistoryPermitsCRLF(t *testing.T) {
+	history := "A=PCM,F=48000,W=16,M=mono\r\n"
+	b := &Bext{CodingHistory: history}
+	if err := b.validate("test"); err != nil {
+		t.Fatalf("a CR LF terminated CodingHistory row was rejected: %v", err)
+	}
+
+	body := b.serialize()
+	if want := bextFixedSize + len(history); len(body) != want {
+		t.Fatalf("serialize() = %d bytes, want %d", len(body), want)
+	}
+	if got := string(body[bextFixedSize:]); got != history {
+		t.Errorf("CodingHistory suffix = %q, want %q", got, history)
+	}
+
+	t.Run("other control bytes are still refused", func(t *testing.T) {
+		if err := (&Bext{CodingHistory: "row one\r\nrow two\x07"}).validate("test"); err == nil {
+			t.Error("a bell byte (0x07) alongside a CR LF row break was accepted")
+		}
+	})
+	t.Run("non-ASCII is still refused", func(t *testing.T) {
+		if err := (&Bext{CodingHistory: "café\r\n"}).validate("test"); err == nil {
+			t.Error("a non-ASCII byte alongside a CR LF row break was accepted")
+		}
+	})
+	t.Run("the fixed-width single-line fields still reject CR LF", func(t *testing.T) {
+		if err := (&Bext{Description: "line one\r\nline two"}).validate("test"); err == nil {
+			t.Error("Description accepted an embedded CR LF; only CodingHistory should")
+		}
+		if err := (&Bext{Originator: "a\r\nb"}).validate("test"); err == nil {
+			t.Error("Originator accepted an embedded CR LF; only CodingHistory should")
+		}
+		if err := (&Bext{OriginatorReference: "a\r\nb"}).validate("test"); err == nil {
+			t.Error("OriginatorReference accepted an embedded CR LF; only CodingHistory should")
+		}
+	})
+}
+
 // TestBextValidateDateTimeFormat checks that OriginationDate and
 // OriginationTime are either empty or exactly the shape the bext fields
 // expect, rejecting anything else including an impossible calendar date.

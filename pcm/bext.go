@@ -39,6 +39,10 @@ const (
 // writes no bext chunk at all, and the encoder's output is then byte-for-byte
 // identical to a Config that never mentions this type.
 //
+// Bext is written only, never read back: a decoder that opens a stream
+// carrying one skips it like any other chunk it does not recognise, the same
+// as every other metadata chunk this package does not expose on read.
+//
 // Every string field below is written ASCII and NUL-padded to a fixed wire
 // width; Config.validate rejects a value that does not fit rather than
 // truncating it. UMID and the five loudness fields the format defines are
@@ -71,12 +75,21 @@ type Bext struct {
 	// first.
 	TimeReference uint64
 
-	// Version is the bext chunk version number, written verbatim.
+	// Version is the bext chunk version number, written verbatim. This
+	// encoder always writes UMID, the field version 1 adds, and the five
+	// loudness values, the fields version 2 adds, as zero, because it has no
+	// source for either: setting Version to 1 or 2 does not populate them. A
+	// spec-aware reader may interpret a zero loudness value as a measured
+	// zero rather than as "not measured", so callers who care about that
+	// distinction should leave Version at 0.
 	Version uint16
 
 	// CodingHistory is a free text record of the coding processes applied to
 	// the audio. It is appended after the fixed 602-byte body and may be
-	// empty.
+	// empty. Unlike the fixed-width text fields above, EBU Tech 3285 defines
+	// CodingHistory as multiple rows, one per transcoding step, each
+	// terminated by CR (0x0D) then LF (0x0A); those two bytes are the only
+	// control characters this field accepts.
 	CodingHistory string
 }
 
@@ -98,7 +111,7 @@ func (b *Bext) validate(op string) error {
 	if err := checkDateTime(op, "OriginationTime", b.OriginationTime, time.TimeOnly); err != nil {
 		return err
 	}
-	if err := checkASCII(op, "CodingHistory", b.CodingHistory); err != nil {
+	if err := checkCodingHistory(op, "CodingHistory", b.CodingHistory); err != nil {
 		return err
 	}
 	return nil
@@ -123,6 +136,30 @@ func checkASCII(op, field, s string) error {
 	for i := range len(s) {
 		if c := s[i]; c < 0x20 || c > 0x7E {
 			return fmt.Errorf("go-wav/pcm: %s: bext %s contains byte %#02x at offset %d, outside printable ASCII",
+				op, field, c, i)
+		}
+	}
+	return nil
+}
+
+// checkCodingHistory reports an error when s carries a byte outside
+// printable ASCII and outside CR (0x0D) and LF (0x0A), the row terminator
+// EBU Tech 3285 defines for CodingHistory. This is deliberately more
+// permissive than checkASCII: a real CodingHistory is multiple rows, one per
+// transcoding step, each ending CR LF, so the strict single-line check the
+// other free text fields use would make a compliant history impossible to
+// write. Every other control byte, and anything outside ASCII, is still
+// refused.
+func checkCodingHistory(op, field, s string) error {
+	for i := range len(s) {
+		c := s[i]
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		if c < 0x20 || c > 0x7E {
+			return fmt.Errorf(
+				"go-wav/pcm: %s: bext %s contains byte %#02x at offset %d, outside printable ASCII "+
+					"(CR and LF are the only control bytes accepted, for row breaks)",
 				op, field, c, i)
 		}
 	}

@@ -2,6 +2,7 @@ package pcm_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	pcm "github.com/tphakala/go-wav/pcm"
@@ -80,6 +81,39 @@ func TestEncoderNilBextWritesNoChunk(t *testing.T) {
 		t.Errorf("a Config with Bext left nil still wrote a bext chunk")
 	}
 	assertDecodes(t, sink.b, cfg, src)
+}
+
+// TestEncoderRejectsInvalidBext checks that an invalid Bext, on an otherwise
+// valid Config, is refused by NewEncoder and Reset rather than silently
+// accepted. Config.validate delegates to Bext.validate, and this is the only
+// test that exercises that delegation through the public API rather than
+// calling Bext.validate directly: without it, that single wiring line could
+// be deleted and the rest of the suite would stay green.
+func TestEncoderRejectsInvalidBext(t *testing.T) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
+		Bext: &pcm.Bext{Description: strings.Repeat("x", 257)}} // one byte over the 256 byte field
+
+	t.Run("NewEncoder", func(t *testing.T) {
+		sink := &memSeeker{}
+		e, err := pcm.NewEncoder(sink, cfg)
+		if err == nil {
+			t.Fatal("NewEncoder accepted a Bext.Description one byte over its 256 byte field")
+		}
+		if e != nil {
+			t.Error("NewEncoder returned a non-nil Encoder alongside its error")
+		}
+		if len(sink.b) != 0 {
+			t.Errorf("a rejected configuration still wrote %d bytes", len(sink.b))
+		}
+	})
+
+	t.Run("Reset", func(t *testing.T) {
+		var e pcm.Encoder
+		sink := &memSeeker{}
+		if err := e.Reset(sink, cfg); err == nil {
+			t.Fatal("Reset accepted a Bext.Description one byte over its 256 byte field")
+		}
+	})
 }
 
 // TestEncoderBextPushesRF64AutoBoundary checks that a bext chunk's extra

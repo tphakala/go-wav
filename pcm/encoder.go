@@ -85,6 +85,12 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config, framesKnown bool) er
 	// Serialized once here rather than inside plan or BuildHeader, since both
 	// need its length: plan to decide whether the stream still fits plain
 	// RIFF once the bext chunk is counted, BuildHeader to place the bytes.
+	//
+	// This must run after cfg.validate above, not before: serialize trusts
+	// that every fixed field already fits its wire width and is plain ASCII,
+	// and appendPadded silently copies whatever it is given rather than
+	// re-checking, so calling it on an unvalidated Bext could truncate a
+	// field instead of reporting the error validate exists to catch.
 	var bextBody []byte
 	if cfg.Bext != nil {
 		bextBody = cfg.Bext.serialize()
