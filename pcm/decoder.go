@@ -557,6 +557,21 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	}
 
 	need := sample.ConvertedLen(n, d.info.SourceBitDepth, d.convert)
+
+	// Fast path: when the converted batch fits in the caller's buffer, convert
+	// straight into it and skip the staging copy. convertBatchLen sizes the
+	// batch to fill p, so this is the common case; the only time need exceeds
+	// len(p) is when p is smaller than a single converted sample, which forces
+	// the batch up to one whole sample and is what the staging buffer below
+	// exists to dribble out.
+	if need <= len(p) {
+		// No leftover is produced, so leave the staging buffer drained: the next
+		// call skips straight past the outBuf check at the top.
+		d.outBuf = d.outBuf[:0]
+		d.outOff = 0
+		return sample.Convert(p, buf[:n], d.info.SourceFormat, d.info.SourceBitDepth, d.convert)
+	}
+
 	if cap(d.outBuf) < need {
 		d.outBuf = make([]byte, need)
 	}
