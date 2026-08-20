@@ -51,6 +51,14 @@ type Encoder struct {
 // which is what lets [RF64Auto] upgrade a stream that outgrows 4 GiB. A plain
 // io.Writer is fully supported; see [Config.TotalFrames] for how to describe a
 // large stream to a sink that cannot seek.
+//
+// A common trap is wrapping a seekable file in a bufio.Writer for throughput:
+// bufio.Writer is not an io.WriteSeeker, so the encoder can no longer patch the
+// header and [RF64Auto] quietly loses the ability to upgrade, leaving a
+// recording that crosses 4 GiB to fail with [wav.ErrTooLarge] instead. Pass the
+// seekable file to the encoder directly, or declare the length with
+// [Config.TotalFrames], which writes a correct header on any sink whether or
+// not it can seek.
 func NewEncoder(w io.Writer, cfg Config) (*Encoder, error) {
 	e := &Encoder{}
 	if err := e.Reset(w, cfg); err != nil {

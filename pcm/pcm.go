@@ -21,7 +21,9 @@ const (
 	// hold a ds64, and rewrites that header in place as RF64 if the stream
 	// outgrows 4 GiB. The rewrite needs an io.WriteSeeker; on a sink that
 	// cannot seek, a stream that outgrows 4 GiB reports wav.ErrTooLarge
-	// unless Config.TotalFrames declared the size up front.
+	// unless Config.TotalFrames declared the size up front. Wrapping a seekable
+	// sink in a bufio.Writer hides its Seek and so disables this upgrade; see
+	// [NewEncoder] for that trap and how to avoid it.
 	//
 	// This is the zero value and the right default: small files stay plain
 	// RIFF and readable by anything, large ones become valid RF64.
