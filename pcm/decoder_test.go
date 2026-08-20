@@ -1059,3 +1059,41 @@ func TestDecoderSmallReads(t *testing.T) {
 		t.Errorf("one byte at a time: got %d bytes want %d", len(got), len(src))
 	}
 }
+
+// TestDecoderConvertSmallReads checks that a converting decoder read a byte at
+// a time yields the same stream as one read in bulk. A buffer smaller than one
+// converted sample forces the staging path in readConverted, the path a bulk
+// read skips because its converted batch fits the caller's buffer and is
+// written straight into it.
+func TestDecoderConvertSmallReads(t *testing.T) {
+	cfg := pcm.Config{SampleRate: 48000, BitDepth: 8, Channels: 1}
+	src := pattern(200)
+	file := encodeFixture(t, cfg, src)
+
+	// Bulk: io.ReadAll grows its buffer well past one converted sample, so the
+	// converted batch fits and the fast path writes it straight into the buffer.
+	bulk := readAllConverted(t, file, 16)
+
+	// Byte at a time: len(p) == 1 is below the two-byte converted sample, so
+	// every read stages the batch and dribbles a single byte out of it.
+	d, err := pcm.NewDecoder(bytes.NewReader(file), pcm.WithConvertTo(16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []byte
+	buf := make([]byte, 1)
+	for {
+		n, rerr := d.Read(buf)
+		got = append(got, buf[:n]...)
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
+			t.Fatalf("Read: %v", rerr)
+		}
+	}
+	if !bytes.Equal(got, bulk) {
+		t.Errorf("byte-at-a-time converted read differs from bulk: got %d bytes want %d",
+			len(got), len(bulk))
+	}
+}
