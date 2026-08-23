@@ -155,3 +155,33 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build ./...
+
+  fuzz:
+    name: Fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # A short bounded run of each decode-path fuzz target on every build. The
+      # reader parses untrusted bytes, so this guards against panics and
+      # unbounded allocation on malformed input; a crash a run finds is
+      # committed under testdata/fuzz as a regression seed. Smoke runs, not a
+      # substitute for a long local fuzz session.
+      - name: Fuzz RIFF header parser
+        run: go test -run='^$' -fuzz='^FuzzParseHeader$' -fuzztime=20s ./internal/riff
+      - name: Fuzz PCM decode
+        run: go test -run='^$' -fuzz='^FuzzDecode$' -fuzztime=20s ./pcm
+      - name: Fuzz decode and seek
+        run: go test -run='^$' -fuzz='^FuzzDecodeSeek$' -fuzztime=15s ./pcm
+      - name: Fuzz bext parser
+        run: go test -run='^$' -fuzz='^FuzzParseBext$' -fuzztime=15s ./pcm
+      - name: Fuzz encode/decode round trip
+        run: go test -run='^$' -fuzz='^FuzzRoundTrip$' -fuzztime=15s ./pcm
+      - name: Fuzz companding conversion
+        run: go test -run='^$' -fuzz='^FuzzConvertCompanded$' -fuzztime=15s ./internal/sample
