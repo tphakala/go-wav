@@ -3,9 +3,11 @@
 [![CI](https://github.com/tphakala/go-wav/actions/workflows/ci.yml/badge.svg)](https://github.com/tphakala/go-wav/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tphakala/go-wav.svg)](https://pkg.go.dev/github.com/tphakala/go-wav)
 [![codecov](https://codecov.io/gh/tphakala/go-wav/branch/main/graph/badge.svg)](https://codecov.io/gh/tphakala/go-wav)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/tphakala/go-wav)](https://github.com/tphakala/go-wav/blob/main/go.mod)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/tphakala/go-wav)](go.mod)
+[![Latest tag](https://img.shields.io/github/v/tag/tphakala/go-wav?sort=semver&label=release)](https://github.com/tphakala/go-wav/tags)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tphakala/go-wav/badge)](https://scorecard.dev/viewer/?uri=github.com/tphakala/go-wav)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Sponsor](https://img.shields.io/github/sponsors/tphakala)](https://github.com/sponsors/tphakala)
+[![Sponsor](https://img.shields.io/github/sponsors/tphakala?logo=githubsponsors&color=ea4aaa&label=Sponsor)](https://github.com/sponsors/tphakala)
 
 A pure-Go library for reading and writing WAV audio, including the 64-bit RF64
 and BW64 extensions for files past 4 GiB (both are read, RF64 is written). No
@@ -250,11 +252,14 @@ with a boundary the decoder will bound reads and seeks by, which is what decides
 whether `SeekToFrame` clamps; it does not say the audio is all there. Reading
 until `io.EOF` is the only way to learn that.
 
+## Sponsor
+
+go-wav is maintained in my own time. If it is useful to you or your project, you
+can support continued maintenance through GitHub Sponsors; sponsorship is
+entirely optional and never gates any feature.
+
+[![Sponsor on GitHub](https://img.shields.io/github/sponsors/tphakala?logo=githubsponsors&color=ea4aaa&label=Sponsor%20%40tphakala)](https://github.com/sponsors/tphakala)
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-## Sponsor
-
-If this is useful to you, [sponsorship](https://github.com/sponsors/tphakala) is
-welcome.
