@@ -46,8 +46,9 @@
 // immediately after fmt. Its zero value, nil, writes no bext chunk at all, so
 // a caller that never touches the field gets the same bytes it always did.
 // [Decoder.Bext] reads a stream's bext chunk back into the same [Bext] type, so
-// it survives a read-modify-write; the other metadata chunks are still skipped
-// on read. See [Bext] for the fields it carries.
+// it survives a read-modify-write, and [Config.IXML] and [Decoder.IXML] do the
+// same for an iXML chunk. The other metadata chunks are still skipped on read.
+// See [Bext] for the fields bext carries.
 //
 // # Decoding
 //

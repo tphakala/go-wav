@@ -122,6 +122,21 @@ type Config struct {
 	// held to. A decoder reads a stream's bext chunk back through
 	// [Decoder.Bext], so a decoded chunk can be set here to re-encode it.
 	Bext *Bext
+
+	// IXML, when non-empty, writes an iXML chunk immediately after bext, or
+	// after fmt when no bext is written, ahead of fact and data. The chunk
+	// carries free-form XML metadata (scene,
+	// take, track names and the like); this package writes the text verbatim
+	// rather than modelling the schema. The zero value, the empty string,
+	// writes no iXML chunk at all.
+	//
+	// It is a string rather than a []byte so that Config stays comparable, the
+	// same reason Bext is a pointer, and iXML is XML text so a string is also
+	// its natural form. A decoder reads a stream's iXML chunk back through
+	// [Decoder.IXML], so a decoded chunk can be set here to re-encode it. It
+	// must not exceed the bytes the reader will hold in memory; a longer one is
+	// rejected rather than written to a file this package could not read back.
+	IXML string
 }
 
 // bytesPerSample is the storage width of a single-channel sample in bytes. It
@@ -191,6 +206,11 @@ func (c Config) validate(op string) error {
 		if err := c.Bext.validate(op); err != nil {
 			return err
 		}
+	}
+	if int64(len(c.IXML)) > int64(riff.MaxChunkPayload) {
+		return fmt.Errorf(
+			"go-wav/pcm: %s: %w: iXML chunk of %d bytes exceeds the %d bytes this package will read back",
+			op, wav.ErrTooLarge, len(c.IXML), riff.MaxChunkPayload)
 	}
 	return nil
 }
