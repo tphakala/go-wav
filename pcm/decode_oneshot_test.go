@@ -56,9 +56,9 @@ func decoderResult(tb testing.TB, b []byte, opts ...pcm.Option) (info wav.Stream
 func assertMatchesDecoder(tb testing.TB, b []byte, opts ...pcm.Option) []byte {
 	tb.Helper()
 	wantInfo, want := decoderResult(tb, b, opts...)
-	gotInfo, got, err := pcm.DecodeInterleaved(b, opts...)
+	got, gotInfo, err := pcm.DecodeInterleavedBytes(b, opts...)
 	if err != nil {
-		tb.Fatalf("DecodeInterleaved: %v", err)
+		tb.Fatalf("DecodeInterleavedBytes: %v", err)
 	}
 	if gotInfo != wantInfo {
 		tb.Errorf("StreamInfo: got %+v want %+v", gotInfo, wantInfo)
@@ -95,9 +95,9 @@ func TestDecodeInterleavedAliases(t *testing.T) {
 	file := encodeFixture(t, cfg, src)
 	start := dataOffset(t, file)
 
-	info, got, err := pcm.DecodeInterleaved(file)
+	got, info, err := pcm.DecodeInterleavedBytes(file)
 	if err != nil {
-		t.Fatalf("DecodeInterleaved: %v", err)
+		t.Fatalf("DecodeInterleavedBytes: %v", err)
 	}
 	if info.BitDepth != 16 || info.Channels != 1 || info.SampleRate != 48000 {
 		t.Errorf("StreamInfo: %+v does not describe the stream", info)
@@ -133,9 +133,9 @@ func TestDecodeInterleavedReturnedSliceCannotReachTheTrailer(t *testing.T) {
 	trailerAt := len(base)
 	trailer := bytes.Clone(file[trailerAt:])
 
-	_, got, err := pcm.DecodeInterleaved(file)
+	got, _, err := pcm.DecodeInterleavedBytes(file)
 	if err != nil {
-		t.Fatalf("DecodeInterleaved: %v", err)
+		t.Fatalf("DecodeInterleavedBytes: %v", err)
 	}
 	if cap(got) != len(got) {
 		t.Errorf("returned slice has capacity %d for a length of %d, so an append would reach past the audio",
@@ -191,9 +191,9 @@ func TestDecodeInterleavedRoundTrip(t *testing.T) {
 			}
 			file := encodeFixture(t, tc.cfg, src)
 
-			info, got, err := pcm.DecodeInterleaved(file)
+			got, info, err := pcm.DecodeInterleavedBytes(file)
 			if err != nil {
-				t.Fatalf("DecodeInterleaved: %v", err)
+				t.Fatalf("DecodeInterleavedBytes: %v", err)
 			}
 			if info.BitDepth != tc.cfg.BitDepth || info.Format != tc.cfg.Format ||
 				info.Channels != tc.cfg.Channels || info.SampleRate != tc.cfg.SampleRate {
@@ -283,9 +283,9 @@ func TestDecodeInterleavedTruncated(t *testing.T) {
 	t.Run("header only", func(t *testing.T) {
 		full := encodeFixture(t, cfg, src)
 		file := full[:dataOffset(t, full)]
-		info, got, err := pcm.DecodeInterleaved(file)
+		got, info, err := pcm.DecodeInterleavedBytes(file)
 		if err != nil {
-			t.Fatalf("DecodeInterleaved: %v", err)
+			t.Fatalf("DecodeInterleavedBytes: %v", err)
 		}
 		if len(got) != 0 {
 			t.Errorf("a stream that ends at its data chunk yielded %d bytes", len(got))
@@ -330,9 +330,9 @@ func TestDecodeInterleavedEmptyDataChunk(t *testing.T) {
 	for _, cfg := range configs {
 		t.Run(fmt.Sprintf("%dbit %dch", cfg.BitDepth, cfg.Channels), func(t *testing.T) {
 			file := encodeFixture(t, cfg, nil)
-			info, got, err := pcm.DecodeInterleaved(file)
+			got, info, err := pcm.DecodeInterleavedBytes(file)
 			if err != nil {
-				t.Fatalf("DecodeInterleaved: %v", err)
+				t.Fatalf("DecodeInterleavedBytes: %v", err)
 			}
 			if len(got) != 0 {
 				t.Errorf("an empty stream yielded %d bytes", len(got))
@@ -343,7 +343,7 @@ func TestDecodeInterleavedEmptyDataChunk(t *testing.T) {
 			// Converting nothing is not an error either. The streaming decoder
 			// reaches the end before it ever converts a sample, so the one-shot
 			// path must not report a failure where the decoder reports none.
-			if _, converted, cerr := pcm.DecodeInterleaved(file, pcm.WithConvertTo(16)); cerr != nil {
+			if converted, _, cerr := pcm.DecodeInterleavedBytes(file, pcm.WithConvertTo(16)); cerr != nil {
 				t.Errorf("converting an empty stream: %v", cerr)
 			} else if len(converted) != 0 {
 				t.Errorf("converting an empty stream yielded %d bytes", len(converted))
@@ -405,9 +405,9 @@ func TestDecodeInterleavedConvertInfo(t *testing.T) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 1, Format: wav.SampleFormatFloat}
 	file := encodeFixture(t, cfg, floatPattern(32, 32))
 
-	info, got, err := pcm.DecodeInterleaved(file, pcm.WithConvertTo(16))
+	got, info, err := pcm.DecodeInterleavedBytes(file, pcm.WithConvertTo(16))
 	if err != nil {
-		t.Fatalf("DecodeInterleaved: %v", err)
+		t.Fatalf("DecodeInterleavedBytes: %v", err)
 	}
 	if info.BitDepth != 16 || info.Format != wav.SampleFormatPCM {
 		t.Errorf("Info reports %d bit %v, want 16 bit pcm", info.BitDepth, info.Format)
@@ -458,7 +458,7 @@ func TestDecodeInterleavedRejectsMalformed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			info, got, err := pcm.DecodeInterleaved(tc.in)
+			got, info, err := pcm.DecodeInterleavedBytes(tc.in)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("error: got %v want one wrapping %v", err, tc.want)
 			}
@@ -480,7 +480,7 @@ func TestDecodeInterleavedRejectsBadOption(t *testing.T) {
 
 	for _, to := range []int{0, 1, 12, 64} {
 		t.Run(fmt.Sprintf("convert to %d", to), func(t *testing.T) {
-			_, got, err := pcm.DecodeInterleaved(file, pcm.WithConvertTo(to))
+			got, _, err := pcm.DecodeInterleavedBytes(file, pcm.WithConvertTo(to))
 			if !errors.Is(err, wav.ErrUnsupported) {
 				t.Fatalf("error: got %v want one wrapping %v", err, wav.ErrUnsupported)
 			}
@@ -530,7 +530,7 @@ func TestDecodeInterleavedConcurrent(t *testing.T) {
 				results[i] = result{err: err}
 				return
 			}
-			info, got, err := pcm.DecodeInterleaved(buf.Bytes())
+			got, info, err := pcm.DecodeInterleavedBytes(buf.Bytes())
 			results[i] = result{cfg: cfg, want: payload, info: info, got: got, err: err}
 		}(i)
 	}
@@ -560,10 +560,10 @@ func TestDecodeInterleavedAfterFailure(t *testing.T) {
 	good := encodeFixture(t, cfg, src)
 
 	for range 20 {
-		if _, _, err := pcm.DecodeInterleaved([]byte("RIFFnonsenseWAVE")); err == nil {
+		if _, _, err := pcm.DecodeInterleavedBytes([]byte("RIFFnonsenseWAVE")); err == nil {
 			t.Fatal("a malformed stream was accepted")
 		}
-		info, got, err := pcm.DecodeInterleaved(good)
+		got, info, err := pcm.DecodeInterleavedBytes(good)
 		if err != nil {
 			t.Fatalf("a good stream after a rejected one: %v", err)
 		}
@@ -596,7 +596,7 @@ func TestDecodeInterleavedResultsSurviveLaterCalls(t *testing.T) {
 			payloads[i][j] = byte(i*13 + j)
 		}
 		files[i] = encodeFixture(t, cfg, payloads[i])
-		_, got, err := pcm.DecodeInterleaved(files[i])
+		got, _, err := pcm.DecodeInterleavedBytes(files[i])
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)
 		}
@@ -636,9 +636,9 @@ func TestDecodeInterleavedDoesNotCopyAtAnyLength(t *testing.T) {
 			file := encodeFixture(t, cfg, src)
 			start := dataOffset(t, file)
 
-			_, got, err := pcm.DecodeInterleaved(file)
+			got, _, err := pcm.DecodeInterleavedBytes(file)
 			if err != nil {
-				t.Fatalf("DecodeInterleaved: %v", err)
+				t.Fatalf("DecodeInterleavedBytes: %v", err)
 			}
 			if !bytes.Equal(got, src) {
 				t.Fatalf("audio: got %d bytes want %d%s", len(got), len(src), describeDifference(got, src))
