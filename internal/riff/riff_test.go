@@ -2655,6 +2655,25 @@ func FuzzParseHeader(f *testing.F) {
 		chunk(idData, make([]byte, 8)),
 	))
 
+	// Seeds carrying the auxiliary metadata chunks, so the corpus already
+	// exercises the bext and iXML branches (and their first-wins and skip
+	// paths) rather than leaving the fuzzer to discover them under the
+	// fuzztime budget.
+	f.Add(cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunk(idFmt, stdFmtPayload()),
+		chunk(idBext, make([]byte, 610)),
+		chunk(idIXML, []byte("<BWFXML><TAKE>001</TAKE></BWFXML>")),
+		chunk(idData, make([]byte, 8)),
+	))
+	f.Add(cat(
+		fileHeader(idRIFF, 0, idWAVE),
+		chunk(idFmt, stdFmtPayload()),
+		chunk(idIXML, []byte("<BWFXML/>")),
+		chunk(idIXML, []byte("<second/>")),
+		chunk(idData, make([]byte, 8)),
+	))
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		h, err := ParseHeader(bufio.NewReader(bytes.NewReader(data)))
 		if err != nil {
