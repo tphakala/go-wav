@@ -135,6 +135,7 @@ func (e *Encoder) reset(op string, w io.Writer, cfg Config, framesKnown bool) er
 		DataSize:    dataSize,
 		Frames:      cfg.TotalFrames,
 		Bext:        bextBody,
+		IXML:        []byte(cfg.IXML),
 	})
 	if err != nil {
 		return e.invalidate(err)
@@ -202,6 +203,7 @@ func fitsPlainRIFF(cfg Config, bextBody []byte, dataSize int64) bool {
 		Format:    formatOf(cfg),
 		Container: wav.ContainerRIFF,
 		Bext:      bextBody,
+		IXML:      []byte(cfg.IXML),
 	}, dataSize)
 }
 

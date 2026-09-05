@@ -63,11 +63,12 @@ Requires Go 1.26 or newer.
   laws are checked against both tools over all 256 codes.
 
 Not implemented: ADPCM and the other compressed format tags; and the metadata
-chunks (`LIST`/`INFO`, `cue `, `iXML`, `axml`, `chna`). Unknown chunks are
-skipped cleanly on read, so files carrying them decode normally, their metadata
-simply is not exposed. The exception is `bext`, which has both a write path
-(`pcm.Config.Bext`) and a read path (`pcm.Decoder.Bext`); see
-[Encoding](#encoding) and [Decoding](#decoding).
+chunks (`LIST`/`INFO`, `cue `, `axml`, `chna`). Unknown chunks are skipped
+cleanly on read, so files carrying them decode normally, their metadata simply
+is not exposed. The exceptions are `bext` and `iXML`, which each have a write
+path (`pcm.Config.Bext`, `pcm.Config.IXML`) and a read path
+(`pcm.Decoder.Bext`, `pcm.Decoder.IXML`); see [Encoding](#encoding) and
+[Decoding](#decoding).
 
 ## Usage
 
@@ -139,6 +140,28 @@ unconventional date separator, control bytes in the coding history); re-encoding
 such a wild chunk then fails validation with the exact field at fault, rather
 than silently sanitising it. The one-shot `DecodeInterleaved` does not expose
 `bext`; use `NewDecoder` for metadata.
+
+`Config.IXML` writes an `iXML` chunk (free-form XML metadata: scene, take and
+track identifiers) immediately after `bext`, and `Decoder.IXML()` reads it back:
+
+```go
+cfg := wavpcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
+    IXML: `<BWFXML><TAKE>001</TAKE></BWFXML>`}
+
+// ... on the decode side ...
+d, _ := wavpcm.NewDecoder(r)
+if x := d.IXML(); x != "" {
+    // x is the raw chunk; parse it with encoding/xml if you need the fields
+}
+```
+
+The text is written and read verbatim: this library does not model the iXML
+schema. `IXML` is a `string` (so `Config` stays comparable, the same reason
+`Bext` is a pointer). `IXML()` returns that text, or the empty string when the
+stream carries no `iXML` chunk, and it can be set straight back on `Config.IXML`
+to re-encode it, so `iXML` survives a read-modify-write just as `bext` does. An
+`iXML` larger than the bytes the reader will hold is rejected by the encoder
+rather than written to a file this package could not read back.
 
 ### Decoding
 
