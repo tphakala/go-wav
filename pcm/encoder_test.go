@@ -800,7 +800,7 @@ func TestEncoderRefusesRatesTheDecoderRefuses(t *testing.T) {
 		if eerr := pcm.EncodeInterleaved(&buf, cfg, []byte{1, 2, 3, 4}); eerr != nil {
 			t.Fatalf("rate %d: EncodeInterleaved: %v", rate, eerr)
 		}
-		info, _, derr := pcm.DecodeInterleaved(buf.Bytes())
+		_, info, derr := pcm.DecodeInterleavedBytes(buf.Bytes())
 		if derr != nil {
 			t.Fatalf("rate %d: encoder wrote a file the decoder refuses: %v", rate, derr)
 		}

@@ -134,12 +134,15 @@ if b, err := d.Bext(); err != nil {
 
 `Bext()` returns `(nil, nil)` when the stream carries no bext chunk. A decoded
 `*Bext` can be set straight back on `Config.Bext` to re-encode it, so `bext`
-written by this library survives a read-modify-write. `Bext()` reads a chunk
-faithfully even when it carries values the encoder refuses (non-ASCII text, an
-unconventional date separator, control bytes in the coding history); re-encoding
-such a wild chunk then fails validation with the exact field at fault, rather
-than silently sanitising it. The one-shot `DecodeInterleaved` does not expose
-`bext`; use `NewDecoder` for metadata.
+written by this library, and `bext` read from a field recorder, both survive a
+read-modify-write: the free-text fields (`Description`, `Originator`,
+`OriginatorReference` and `CodingHistory`) accept CR and LF, which is what
+recorders pack into `Description` as CRLF-separated `key=value` metadata.
+`Bext()` still reads a chunk faithfully even when it carries values the encoder
+refuses (non-ASCII text, an unconventional date separator, other control bytes);
+re-encoding such a wild chunk then fails validation with the exact field at
+fault, rather than silently sanitising it. The one-shot decode helpers do not
+expose `bext`; use `NewDecoder` for metadata.
 
 `Config.IXML` writes an `iXML` chunk (free-form XML metadata: scene, take and
 track identifiers) immediately after `bext`, and `Decoder.IXML()` reads it back:
@@ -171,20 +174,31 @@ info := d.Info()        // valid immediately
 _, err = io.Copy(w, d)  // WriteTo drains the whole stream
 ```
 
-A whole file already in memory needs no reader and no copy:
+A stream in an `io.Reader` decodes in one call, the same signature the sibling
+libraries expose so a caller can dispatch across codecs on it:
 
 ```go
-info, samples, err := wavpcm.DecodeInterleaved(b)
+samples, info, err := wavpcm.DecodeInterleaved(r)
 ```
 
-When the bytes handed back are the bytes as stored, `samples` aliases the audio
-inside `b` instead of being copied out of it, so writing through either one is
-visible through the other. When they are not, the returned buffer is freshly
-allocated and aliases nothing: that is the case under `WithConvertTo`, and also
-over an A-law or mu-law file with no option at all, since one of those is
-expanded whether or not a conversion was asked for. So the options alone do not
-tell you which you got; check `SourceFormat` on the returned `StreamInfo` before
-relying on the aliasing.
+It reads the whole stream into memory and stops at `DefaultMaxDecodedBytes` (1
+GiB), returning a wrapped `ErrDecodeLimit` past that; `DecodeInterleavedLimit`
+takes a different ceiling. When the file is already held as a byte slice,
+`DecodeInterleavedBytes` decodes it without a copy:
+
+```go
+samples, info, err := wavpcm.DecodeInterleavedBytes(b)
+```
+
+When `DecodeInterleavedBytes` hands back the bytes as stored, `samples` aliases
+the audio inside `b` instead of being copied out of it, so writing through either
+one is visible through the other. When they are not, the returned buffer is
+freshly allocated and aliases nothing: that is the case under `WithConvertTo`,
+and also over an A-law or mu-law file with no option at all, since one of those
+is expanded whether or not a conversion was asked for. So the options alone do
+not tell you which you got; check `SourceFormat` on the returned `StreamInfo`
+before relying on the aliasing. The `io.Reader` form always allocates, so its
+result never aliases anything.
 
 By default the decoder is a pass-through for everything but the two companding
 laws: `Read` yields the bytes as stored, so 24-bit audio stays packed in three

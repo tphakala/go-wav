@@ -3,9 +3,10 @@
 // It is the entry point of go-wav, and it presents the same shape as the pcm
 // packages of the sibling libraries go-flac, go-opus and go-aac: a flat Config
 // struct for the encoder, variadic options for the decoder, New plus Reset
-// pairs so both can be pooled, and one-shot [EncodeInterleaved] and
-// [DecodeInterleaved] entry points for callers who already hold the whole
-// buffer.
+// pairs so both can be pooled, and one-shot [EncodeInterleaved] over an
+// [io.Writer] and [DecodeInterleaved] over an [io.Reader]. On top of that
+// shared contract go-wav adds [DecodeInterleavedBytes], a zero-copy decode for a
+// whole file already held as a byte slice.
 //
 //	import wavpcm "github.com/tphakala/go-wav/pcm"
 //
@@ -61,17 +62,23 @@
 //	info := d.Info()       // valid immediately
 //	_, err = io.Copy(w, d)
 //
-// A whole file already in memory needs no reader and no copy:
+// A stream in an [io.Reader] decodes in one call, the entry point shared with
+// the sibling libraries. It bounds its output at [DefaultMaxDecodedBytes];
+// [DecodeInterleavedLimit] takes a different ceiling.
 //
-//	info, samples, err := wavpcm.DecodeInterleaved(b)
+//	samples, info, err := wavpcm.DecodeInterleaved(r)
 //
-// Whenever the bytes handed back are the bytes as stored, the samples it
-// returns alias b rather than being copied out of it, which is the one place in
-// the package where a returned slice is a window onto the caller's own memory.
-// A stream whose samples are rewritten on the way out comes back in a buffer of
-// its own instead, and a companded source is rewritten with or without a
-// conversion option, so the options alone do not say which case applies. See
-// [DecodeInterleaved] for what that means.
+// A whole file already held as a byte slice needs no copy:
+//
+//	samples, info, err := wavpcm.DecodeInterleavedBytes(b)
+//
+// Whenever the bytes handed back are the bytes as stored, the samples
+// DecodeInterleavedBytes returns alias b rather than being copied out of it,
+// which is the one place in the package where a returned slice is a window onto
+// the caller's own memory. A stream whose samples are rewritten on the way out
+// comes back in a buffer of its own instead, and a companded source is rewritten
+// with or without a conversion option, so the options alone do not say which
+// case applies. See [DecodeInterleavedBytes] for what that means.
 //
 // Pass-through means the sample encoding varies with the file: notably, 8-bit
 // data is unsigned while every wider integer depth is signed, because that is
@@ -90,7 +97,10 @@
 //
 // # Concurrency
 //
-// An Encoder or Decoder is not safe for concurrent use. [EncodeInterleaved] and
-// [DecodeInterleaved] are, because they draw from a pool. The package holds no
-// mutable global state.
+// An Encoder or Decoder is not safe for concurrent use. The one-shot
+// [EncodeInterleaved], [DecodeInterleaved], [DecodeInterleavedLimit] and
+// [DecodeInterleavedBytes] are, because each call is independent:
+// EncodeInterleaved and DecodeInterleavedBytes draw from a pool, and
+// DecodeInterleaved and DecodeInterleavedLimit build a decoder per call. The
+// package holds no mutable global state.
 package pcm

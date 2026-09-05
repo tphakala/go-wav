@@ -55,8 +55,8 @@ func FuzzDecode(f *testing.F) {
 				// The one-shot path parses the same header, so a stream the
 				// streaming decoder refuses must be refused here too rather
 				// than sliced by bounds nothing validated.
-				if _, got, oneErr := pcm.DecodeInterleaved(data, opts...); oneErr == nil {
-					t.Fatalf("DecodeInterleaved accepted %d bytes of a stream NewDecoder refused with %v",
+				if got, _, oneErr := pcm.DecodeInterleavedBytes(data, opts...); oneErr == nil {
+					t.Fatalf("DecodeInterleavedBytes accepted %d bytes of a stream NewDecoder refused with %v",
 						len(got), err)
 				}
 				continue
@@ -79,12 +79,12 @@ func FuzzDecode(f *testing.F) {
 			// a bound the streaming path merely stops early on is one this
 			// path would panic on. Whatever the header claims, the two must
 			// agree byte for byte.
-			oneInfo, one, oneErr := pcm.DecodeInterleaved(data, opts...)
+			one, oneInfo, oneErr := pcm.DecodeInterleavedBytes(data, opts...)
 			if oneErr != nil {
-				t.Fatalf("DecodeInterleaved refused a stream the decoder drained: %v", oneErr)
+				t.Fatalf("DecodeInterleavedBytes refused a stream the decoder drained: %v", oneErr)
 			}
 			if oneInfo != info {
-				t.Fatalf("StreamInfo: DecodeInterleaved reports %+v, the decoder reports %+v", oneInfo, info)
+				t.Fatalf("StreamInfo: DecodeInterleavedBytes reports %+v, the decoder reports %+v", oneInfo, info)
 			}
 			// The result is a window onto the input exactly when the bytes
 			// handed back are the bytes as stored, which needs both that no
@@ -99,7 +99,7 @@ func FuzzDecode(f *testing.F) {
 			// may legitimately be wider than the stream it came from.
 			aliases := opts == nil && !info.SourceFormat.Companded()
 			if aliases && len(one) > len(data) {
-				t.Fatalf("a pass-through DecodeInterleaved returned %d bytes from a %d byte stream",
+				t.Fatalf("a pass-through DecodeInterleavedBytes returned %d bytes from a %d byte stream",
 					len(one), len(data))
 			}
 			// The capacity has to stop exactly at the length either way. On the
@@ -108,11 +108,11 @@ func FuzzDecode(f *testing.F) {
 			// audio; on the allocated path it is a promise the package makes so
 			// that appending behaves the same whichever path a file took.
 			if cap(one) != len(one) {
-				t.Fatalf("DecodeInterleaved returned %d bytes with capacity %d from a %d byte stream",
+				t.Fatalf("DecodeInterleavedBytes returned %d bytes with capacity %d from a %d byte stream",
 					len(one), cap(one), len(data))
 			}
 			if !bytes.Equal(one, streamed.Bytes()) {
-				t.Fatalf("audio: DecodeInterleaved returned %d bytes, the decoder returned %d",
+				t.Fatalf("audio: DecodeInterleavedBytes returned %d bytes, the decoder returned %d",
 					len(one), streamed.Len())
 			}
 		}

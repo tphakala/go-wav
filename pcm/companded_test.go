@@ -310,9 +310,9 @@ func TestDecodeInterleavedCompanded(t *testing.T) {
 
 			// And the info returned alongside describes those bytes, not the
 			// stored ones, with the stored encoding still readable.
-			info, _, err := pcm.DecodeInterleaved(file)
+			_, info, err := pcm.DecodeInterleavedBytes(file)
 			if err != nil {
-				t.Fatalf("DecodeInterleaved: %v", err)
+				t.Fatalf("DecodeInterleavedBytes: %v", err)
 			}
 			if info.Format != wav.SampleFormatPCM || info.BitDepth != 16 {
 				t.Errorf("StreamInfo describes the returned bytes as %v/%d, want pcm/16",

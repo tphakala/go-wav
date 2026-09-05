@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+// Field-name labels reused across the bext validation tests, named so the
+// repeated strings do not multiply as magic literals.
+const (
+	fieldDescription         = "Description"
+	fieldOriginator          = "Originator"
+	fieldOriginatorReference = "OriginatorReference"
+)
+
 // TestBextFixedBodyIs602Bytes pins the fixed part of the bext body to the
 // width EBU Tech 3285 defines: everything up to CodingHistory.
 func TestBextFixedBodyIs602Bytes(t *testing.T) {
@@ -46,9 +54,9 @@ func TestBextFieldOffsets(t *testing.T) {
 			t.Errorf("%s at offset %d width %d: got %q, want %q", name, off, width, got, want)
 		}
 	}
-	checkField("Description", 0, bextDescriptionSize, b.Description)
-	checkField("Originator", bextDescriptionSize, bextOriginatorSize, b.Originator)
-	checkField("OriginatorReference", bextDescriptionSize+bextOriginatorSize, bextOriginatorReferenceSize,
+	checkField(fieldDescription, 0, bextDescriptionSize, b.Description)
+	checkField(fieldOriginator, bextDescriptionSize, bextOriginatorSize, b.Originator)
+	checkField(fieldOriginatorReference, bextDescriptionSize+bextOriginatorSize, bextOriginatorReferenceSize,
 		b.OriginatorReference)
 	checkField("OriginationDate", bextDescriptionSize+bextOriginatorSize+bextOriginatorReferenceSize,
 		bextOriginationDateSize, b.OriginationDate)
@@ -103,9 +111,9 @@ func TestBextValidateWidths(t *testing.T) {
 		build func(s string) *Bext
 		width int
 	}{
-		{"Description", func(s string) *Bext { return &Bext{Description: s} }, bextDescriptionSize},
-		{"Originator", func(s string) *Bext { return &Bext{Originator: s} }, bextOriginatorSize},
-		{"OriginatorReference", func(s string) *Bext { return &Bext{OriginatorReference: s} },
+		{fieldDescription, func(s string) *Bext { return &Bext{Description: s} }, bextDescriptionSize},
+		{fieldOriginator, func(s string) *Bext { return &Bext{Originator: s} }, bextOriginatorSize},
+		{fieldOriginatorReference, func(s string) *Bext { return &Bext{OriginatorReference: s} },
 			bextOriginatorReferenceSize},
 	}
 	for _, tc := range cases {
@@ -130,9 +138,9 @@ func TestBextValidateASCII(t *testing.T) {
 		name  string
 		build func(s string) *Bext
 	}{
-		{"Description", func(s string) *Bext { return &Bext{Description: s} }},
-		{"Originator", func(s string) *Bext { return &Bext{Originator: s} }},
-		{"OriginatorReference", func(s string) *Bext { return &Bext{OriginatorReference: s} }},
+		{fieldDescription, func(s string) *Bext { return &Bext{Description: s} }},
+		{fieldOriginator, func(s string) *Bext { return &Bext{Originator: s} }},
+		{fieldOriginatorReference, func(s string) *Bext { return &Bext{OriginatorReference: s} }},
 		{"CodingHistory", func(s string) *Bext { return &Bext{CodingHistory: s} }},
 	}
 	for _, tc := range cases {
@@ -153,11 +161,11 @@ func TestBextValidateASCII(t *testing.T) {
 	}
 }
 
-// TestBextCodingHistoryPermitsCRLF checks the one deliberate relaxation from
-// checkASCII: EBU Tech 3285 defines CodingHistory as one row per transcoding
-// step, each terminated by CR then LF, so those two bytes must be accepted
-// there even though every other control byte, and every other free text
-// field, still rejects them.
+// TestBextCodingHistoryPermitsCRLF checks that CR and LF are accepted in
+// CodingHistory: EBU Tech 3285 defines it as one row per transcoding step, each
+// terminated by CR then LF. Every other control byte, and anything outside
+// ASCII, is still refused. CR and LF are also accepted in the other free text
+// fields; TestBextFreeTextPermitsCRLF covers those.
 func TestBextCodingHistoryPermitsCRLF(t *testing.T) {
 	history := "A=PCM,F=48000,W=16,M=mono\r\n"
 	b := &Bext{CodingHistory: history}
@@ -183,15 +191,61 @@ func TestBextCodingHistoryPermitsCRLF(t *testing.T) {
 			t.Error("a non-ASCII byte alongside a CR LF row break was accepted")
 		}
 	})
-	t.Run("the fixed-width single-line fields still reject CR LF", func(t *testing.T) {
-		if err := (&Bext{Description: "line one\r\nline two"}).validate("test"); err == nil {
-			t.Error("Description accepted an embedded CR LF; only CodingHistory should")
+	t.Run("the free text fields also accept CR LF", func(t *testing.T) {
+		if err := (&Bext{Description: "line one\r\nline two"}).validate("test"); err != nil {
+			t.Errorf("Description rejected an embedded CR LF: %v", err)
 		}
-		if err := (&Bext{Originator: "a\r\nb"}).validate("test"); err == nil {
-			t.Error("Originator accepted an embedded CR LF; only CodingHistory should")
+		if err := (&Bext{Originator: "a\r\nb"}).validate("test"); err != nil {
+			t.Errorf("Originator rejected an embedded CR LF: %v", err)
 		}
-		if err := (&Bext{OriginatorReference: "a\r\nb"}).validate("test"); err == nil {
-			t.Error("OriginatorReference accepted an embedded CR LF; only CodingHistory should")
+		if err := (&Bext{OriginatorReference: "a\r\nb"}).validate("test"); err != nil {
+			t.Errorf("OriginatorReference rejected an embedded CR LF: %v", err)
+		}
+	})
+}
+
+// TestBextFreeTextPermitsCRLF checks that the free text fields Description,
+// Originator and OriginatorReference accept CR and LF the same way CodingHistory
+// does. Field recorders pack CRLF-separated key=value metadata into Description,
+// and the read path returns those bytes verbatim, so the write path must accept
+// them for a decoded recorder bext to re-encode unchanged. Every other control
+// byte, and anything outside ASCII, is still refused.
+func TestBextFreeTextPermitsCRLF(t *testing.T) {
+	fields := []struct {
+		name  string
+		build func(s string) *Bext
+	}{
+		{fieldDescription, func(s string) *Bext { return &Bext{Description: s} }},
+		{fieldOriginator, func(s string) *Bext { return &Bext{Originator: s} }},
+		{fieldOriginatorReference, func(s string) *Bext { return &Bext{OriginatorReference: s} }},
+	}
+	for _, f := range fields {
+		t.Run(f.name, func(t *testing.T) {
+			if err := f.build("row one\r\nrow two").validate("test"); err != nil {
+				t.Errorf("a CR LF pair was rejected: %v", err)
+			}
+			if err := f.build("bell\abyte").validate("test"); err == nil {
+				t.Error("a bell byte (0x07) was accepted")
+			}
+			if err := f.build("nul\x00byte").validate("test"); err == nil {
+				t.Error("an embedded NUL byte was accepted")
+			}
+			if err := f.build("café").validate("test"); err == nil {
+				t.Error("a non-ASCII byte was accepted")
+			}
+		})
+	}
+
+	t.Run("recorder Description serializes and round-trips", func(t *testing.T) {
+		// A ZOOM-style recorder Description: CRLF-separated key=value rows.
+		const recorderDesc = "zTAKE=001\r\nzSCENE=210725_172556\r\nzTAPE=\r\n"
+		b := &Bext{Description: recorderDesc}
+		if err := b.validate("test"); err != nil {
+			t.Fatalf("a recorder Description was rejected: %v", err)
+		}
+		body := b.serialize()
+		if got := cutAtNUL(body[bextOffDescription:bextOffOriginator]); got != recorderDesc {
+			t.Errorf("Description round-trip = %q, want %q", got, recorderDesc)
 		}
 	})
 }
