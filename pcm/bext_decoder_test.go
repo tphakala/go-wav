@@ -124,6 +124,57 @@ func TestDecoderBextRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecoderBextRoundTripRecorderCRLF encodes a bext whose Description carries
+// the CRLF-separated key=value metadata a field recorder writes, decodes it, and
+// hands the decoded *Bext straight back to Config.Bext to re-encode it. It fails
+// if the write path rejects the CR/LF the read path returns, which would make a
+// real recorder's bext impossible to round-trip through this library.
+func TestDecoderBextRoundTripRecorderCRLF(t *testing.T) {
+	orig := bextFixture()
+	orig.Description = "zTAKE=001\r\nzSCENE=210725_172556\r\nzTAPE=\r\n"
+
+	src := pattern(256)
+	b := encodeFixture(t, pcm.Config{
+		SampleRate: 48000, BitDepth: 16, Channels: 1, Bext: orig,
+	}, src)
+
+	d, err := pcm.NewDecoder(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	got, err := d.Bext()
+	if err != nil {
+		t.Fatalf("Bext: %v", err)
+	}
+	if !reflect.DeepEqual(got, orig) {
+		t.Errorf("decoded Bext mismatch\n got %+v\nwant %+v", got, orig)
+	}
+
+	// The decoded chunk must re-encode unchanged: handing it straight back to
+	// Config.Bext is the read-modify-write the README promises for bext.
+	var buf bytes.Buffer
+	if err := pcm.EncodeInterleaved(&buf, pcm.Config{
+		SampleRate: 48000, BitDepth: 16, Channels: 1, Bext: got,
+	}, src); err != nil {
+		t.Fatalf("re-encoding the decoded recorder bext failed: %v", err)
+	}
+
+	// "Unchanged" means the bext survives the round trip, not merely that the
+	// re-encode did not error: decode the re-encoded stream and compare its bext
+	// to the original.
+	d2, err := pcm.NewDecoder(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewDecoder on re-encoded stream: %v", err)
+	}
+	got2, err := d2.Bext()
+	if err != nil {
+		t.Fatalf("Bext on re-encoded stream: %v", err)
+	}
+	if !reflect.DeepEqual(got2, orig) {
+		t.Errorf("bext did not survive re-encode\n got %+v\nwant %+v", got2, orig)
+	}
+}
+
 // TestDecoderBextAbsent checks that a stream carrying no bext chunk reports its
 // absence as (nil, nil), not as an error.
 func TestDecoderBextAbsent(t *testing.T) {

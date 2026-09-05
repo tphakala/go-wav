@@ -35,12 +35,34 @@ func Example() {
 		log.Fatal(err)
 	}
 
-	info, audio, err := pcm.DecodeInterleaved(buf.Bytes())
+	audio, info, err := pcm.DecodeInterleavedBytes(buf.Bytes())
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("%s %d Hz, %d ch, %d-bit, %d bytes of audio\n",
 		info.Format, info.SampleRate, info.Channels, info.BitDepth, len(audio))
+	// Output: pcm 44100 Hz, 2 ch, 16-bit, 8 bytes of audio
+}
+
+// ExampleDecodeInterleaved decodes a whole stream from an io.Reader in one call.
+// This is the entry point the sibling go-audio libraries share, so a caller can
+// dispatch decode across codecs on the same signature. It bounds its output at
+// DefaultMaxDecodedBytes; DecodeInterleavedLimit takes a different ceiling.
+func ExampleDecodeInterleaved() {
+	cfg := pcm.Config{SampleRate: 44100, Channels: 2, BitDepth: 16}
+	var buf bytes.Buffer
+	if err := pcm.EncodeInterleaved(&buf, cfg, le16(1000, -1000, 2000, -2000)); err != nil {
+		log.Fatal(err)
+	}
+
+	// r is any io.Reader over the stream: a file, a socket, or a byte buffer.
+	var r io.Reader = &buf
+	samples, info, err := pcm.DecodeInterleaved(r)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s %d Hz, %d ch, %d-bit, %d bytes of audio\n",
+		info.Format, info.SampleRate, info.Channels, info.BitDepth, len(samples))
 	// Output: pcm 44100 Hz, 2 ch, 16-bit, 8 bytes of audio
 }
 

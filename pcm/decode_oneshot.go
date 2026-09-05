@@ -2,13 +2,143 @@ package pcm
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sync"
 
 	wav "github.com/tphakala/go-wav"
 	"github.com/tphakala/go-wav/internal/sample"
 )
+
+// DefaultMaxDecodedBytes is the ceiling [DecodeInterleaved] applies to its
+// output. Decoded PCM is roughly the size of the stream it came from, so unlike
+// a FLAC or Opus decoder this one cannot be driven to a huge allocation by a
+// tiny crafted input. The ceiling still matters because the one-shot path holds
+// the whole result in memory at once and reads from an [io.Reader] whose length
+// it cannot know in advance: a stream that declares no length, one decoded under
+// [WithIgnoreLength], or one whose header overstates the audio all read on until
+// the source ends. The ceiling bounds that peak rather than trusting the source
+// to be as long as it claims. It is 1 GiB, about 101 minutes of CD-quality
+// (44.1 kHz, 16-bit) stereo.
+//
+// A caller decoding a stream it did not produce, or one legitimately longer than
+// this, uses [NewDecoder] and streams the audio instead, which bounds memory to
+// a single reusable buffer regardless of length.
+const DefaultMaxDecodedBytes = 1 << 30
+
+// ErrDecodeLimit reports that a one-shot decode was stopped because its output
+// would exceed the byte ceiling in effect. Test for it with [errors.Is]. See
+// [DefaultMaxDecodedBytes] for why the limit exists.
+var ErrDecodeLimit = errors.New("go-wav/pcm: decoded size limit exceeded")
+
+// DecodeInterleaved reads an entire WAVE stream from r and returns the decoded
+// interleaved little-endian PCM together with the stream info. It is the
+// one-shot mirror of [EncodeInterleaved] and matches the io.Reader decode
+// contract of the sibling go-audio packages (go-flac, go-aac and go-opus each
+// expose the same DecodeInterleaved and DecodeInterleavedLimit), so a caller can
+// dispatch across codecs on the shared signature.
+//
+// It stops at [DefaultMaxDecodedBytes] and returns a wrapped [ErrDecodeLimit] if
+// the output would exceed it. For a different ceiling use
+// [DecodeInterleavedLimit]; for a stream of unknown or unbounded length use
+// [NewDecoder], which streams the audio in memory proportional to a single
+// buffer. When the whole file is already in memory, [DecodeInterleavedBytes]
+// decodes it without a copy where the stored bytes can be handed back as they
+// are.
+//
+// Options such as [WithConvertTo] are forwarded to the underlying decoder, so
+// the returned StreamInfo and bytes describe the converted stream just as
+// [Decoder.Info] and [Decoder.Read] would. Metadata chunks (bext, iXML) are not
+// exposed on this path; a caller that wants them opens the stream with
+// [NewDecoder].
+func DecodeInterleaved(r io.Reader, opts ...Option) ([]byte, wav.StreamInfo, error) {
+	return DecodeInterleavedLimit(r, DefaultMaxDecodedBytes, opts...)
+}
+
+// DecodeInterleavedLimit is [DecodeInterleaved] with a caller-chosen ceiling.
+// maxBytes is the largest decoded output it will return; a decode that would
+// exceed it stops and returns a wrapped [ErrDecodeLimit], with the bytes decoded
+// so far discarded. A maxBytes of zero or less removes the ceiling, which is
+// only safe for a stream the caller produced or has otherwise bounded. Options
+// are forwarded to the underlying decoder.
+func DecodeInterleavedLimit(r io.Reader, maxBytes int, opts ...Option) ([]byte, wav.StreamInfo, error) {
+	d, err := NewDecoder(r, opts...)
+	if err != nil {
+		return nil, wav.StreamInfo{}, err
+	}
+	info := d.Info()
+
+	var buf bytes.Buffer
+	// Pre-size from the declared length so the common case allocates once
+	// instead of growing by doubling. presizeHint bounds the reservation; see
+	// there for why the declared count is not trusted directly.
+	if n := presizeHint(info, maxBytes); n > 0 {
+		buf.Grow(n)
+	}
+
+	cw := &cappedWriter{buf: &buf, max: maxBytes}
+	if _, err := d.WriteTo(cw); err != nil {
+		return nil, info, err
+	}
+	return buf.Bytes(), info, nil
+}
+
+// maxPreSize caps the up-front buffer reservation the one-shot makes from the
+// header-declared frame count. That count is a claim the reader has not checked
+// against the audio, so without a cap a file declaring a huge total would drive
+// a reservation of up to the whole ceiling before a single sample is decoded,
+// which is the very small-input-large-allocation hazard the ceiling exists to
+// stop. cappedWriter still enforces the real ceiling on the bytes actually
+// produced, so this only bounds the initial guess: a genuinely large stream
+// grows past it by doubling.
+const maxPreSize = 32 << 20 // 32 MiB
+
+// presizeHint returns how many bytes to reserve up front for a decode of the
+// given stream, or 0 to skip pre-sizing. It uses BitDepth and Channels, which
+// the decoder has already set to the post-conversion width, so a companded or
+// converted stream is sized for what it expands to. The reservation is bounded
+// by maxPreSize and, when a positive ceiling is set, by maxBytes, so a declared
+// length can never drive it past those.
+func presizeHint(info wav.StreamInfo, maxBytes int) int {
+	bytesPerSample := sample.BytesPerSample(info.BitDepth)
+	if info.TotalFrames == 0 || info.Channels <= 0 || bytesPerSample <= 0 {
+		return 0
+	}
+	hint := int64(info.TotalFrames) * int64(info.Channels) * int64(bytesPerSample)
+	if hint <= 0 { // zero, or a wrapped-negative from an implausible declared total
+		return 0
+	}
+	if hint > maxPreSize {
+		hint = maxPreSize
+	}
+	if maxBytes > 0 && hint > int64(maxBytes) {
+		hint = int64(maxBytes)
+	}
+	return int(hint)
+}
+
+// cappedWriter accumulates into buf and refuses a write that would carry the
+// total past max. It writes nothing on the failing call, so buf holds only the
+// whole blocks WriteTo delivered up to the point the limit was hit. A max of
+// zero or less is unbounded.
+type cappedWriter struct {
+	buf *bytes.Buffer
+	n   int
+	max int
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if c.max > 0 && c.n > c.max-len(p) {
+		return 0, fmt.Errorf(
+			"go-wav/pcm: DecodeInterleaved: %w: output would exceed %d bytes",
+			ErrDecodeLimit, c.max)
+	}
+	n, err := c.buf.Write(p)
+	c.n += n
+	return n, err
+}
 
 // oneshotDecoder pairs a decoder with the reader it parses through. Holding the
 // reader by value rather than building one per call is what lets the one-shot
@@ -24,12 +154,16 @@ type oneshotDecoder struct {
 // time.
 var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 
-// DecodeInterleaved reads a complete WAVE stream from b and returns what the
-// stream is together with its interleaved samples.
+// DecodeInterleavedBytes reads a complete WAVE stream from b and returns its
+// interleaved samples together with what the stream is.
 //
-// It is the one-shot counterpart to [NewDecoder], for callers that already hold
-// the whole file. Like [EncodeInterleaved] it is safe for concurrent use,
-// because it draws its decoder from a pool.
+// It is the zero-copy fast path for callers that already hold the whole file in
+// memory: where the stored bytes can be handed back unchanged it returns a
+// window onto b rather than a copy (see below). [DecodeInterleaved] is the
+// streaming, [io.Reader]-based form and the entry point shared with the sibling
+// go-audio packages; this one trades that shared signature for the no-copy
+// return. Like [EncodeInterleaved] it is safe for concurrent use, because it
+// draws its decoder from a pool.
 //
 // The returned slice ALIASES the audio data within b exactly when the bytes
 // handed back are the bytes as stored, which is the case when no conversion
@@ -97,7 +231,7 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // This path exposes no bext or iXML chunk; a caller that wants the metadata a
 // stream carries opens it with [NewDecoder] and calls [Decoder.Bext] or
 // [Decoder.IXML].
-func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error) {
+func DecodeInterleavedBytes(b []byte, opts ...Option) ([]byte, wav.StreamInfo, error) {
 	o, _ := decoderPool.Get().(*oneshotDecoder)
 	defer func() {
 		// Drop the caller's buffer and the parsed header before pooling. A
@@ -111,8 +245,8 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	}()
 
 	o.r.Reset(b)
-	if err := o.d.reset("DecodeInterleaved", &o.r, opts...); err != nil {
-		return wav.StreamInfo{}, nil, err
+	if err := o.d.reset("DecodeInterleavedBytes", &o.r, opts...); err != nil {
+		return nil, wav.StreamInfo{}, err
 	}
 	d := &o.d
 
@@ -127,8 +261,8 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	// stops being true, an error is a better answer than a panic in a caller's
 	// decode loop.
 	if start < 0 || start > int64(len(b)) {
-		return wav.StreamInfo{}, nil, fmt.Errorf(
-			"go-wav/pcm: DecodeInterleaved: %w: audio begins at offset %d of a %d byte stream",
+		return nil, wav.StreamInfo{}, fmt.Errorf(
+			"go-wav/pcm: DecodeInterleavedBytes: %w: audio begins at offset %d of a %d byte stream",
 			wav.ErrCorruptStream, start, len(b))
 	}
 
@@ -147,7 +281,7 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	audio := b[start:end:end]
 
 	if d.convert == 0 {
-		return d.info, audio, nil
+		return audio, d.info, nil
 	}
 
 	// Converting allocates, because the converted samples are a different
@@ -161,7 +295,7 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	srcWidth := sample.BytesPerSample(d.info.SourceBitDepth)
 	dstWidth := sample.BytesPerSample(d.convert)
 	if srcWidth <= 0 || dstWidth <= 0 {
-		return wav.StreamInfo{}, nil, fmt.Errorf(
+		return nil, wav.StreamInfo{}, fmt.Errorf(
 			"go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}
 	// Widening a whole file in one call is the only place this package asks
@@ -170,19 +304,19 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 	// batch it stages; here the whole file is the batch, and the file's size
 	// is not this package's to choose.
 	if !convertedBytesFit(len(audio)/srcWidth, dstWidth, math.MaxInt) {
-		return wav.StreamInfo{}, nil,
+		return nil, wav.StreamInfo{},
 			errUnrepresentableSize(len(audio), d.info.SourceBitDepth, d.convert)
 	}
 	out := make([]byte, sample.ConvertedLen(len(audio), d.info.SourceBitDepth, d.convert))
 	n, err := sample.Convert(out, audio, d.info.SourceFormat, d.info.SourceBitDepth, d.convert)
 	if err != nil {
-		return wav.StreamInfo{}, nil, err
+		return nil, wav.StreamInfo{}, err
 	}
 	// Three-indexed like the pass-through result, so both cases hand back a
 	// slice whose capacity ends at its length. Convert writes exactly
 	// ConvertedLen bytes today, so this trims nothing; it is here so that the
 	// promise holds without depending on that.
-	return d.info, out[:n:n], nil
+	return out[:n:n], d.info, nil
 }
 
 // errUnrepresentableSize reports a conversion whose result cannot be expressed
@@ -196,10 +330,10 @@ func DecodeInterleaved(b []byte, opts ...Option) (wav.StreamInfo, []byte, error)
 // Without a test, the decision to wrap nothing is one line away from being
 // reversed by someone who reads only the sibling refusal in internal/sample.
 //
-// See [DecodeInterleaved] for why it wraps nothing.
+// See [DecodeInterleavedBytes] for why it wraps nothing.
 func errUnrepresentableSize(audioLen, srcBits, dstBits int) error {
 	return fmt.Errorf(
-		"go-wav/pcm: DecodeInterleaved: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",
+		"go-wav/pcm: DecodeInterleavedBytes: converting %d bytes of %d bit audio to %d bit needs more bytes than this platform can address",
 		audioLen, srcBits, dstBits)
 }
 
@@ -223,8 +357,8 @@ func errUnrepresentableSize(audioLen, srcBits, dstBits int) error {
 // The two refusals are not interchangeable, and the difference is deliberate
 // rather than an oversight. Convert wraps io.ErrShortBuffer, which fits a
 // function holding a dst that could in principle have been longer;
-// [errUnrepresentableSize] wraps nothing, because DecodeInterleaved takes no
-// destination and there is nothing for a caller to grow. Which one a caller
+// [errUnrepresentableSize] wraps nothing, because DecodeInterleavedBytes takes
+// no destination and there is nothing for a caller to grow. Which one a caller
 // sees does not arise in practice, because this check is the strictly earlier
 // of the two, so the one inside the conversion is unreachable from this path;
 // both halves are pinned by tests so that neither the precedence nor the

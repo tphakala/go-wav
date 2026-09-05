@@ -47,24 +47,32 @@ const (
 // its own pair, [Config.IXML] and [Decoder.IXML]; the other metadata chunks
 // (LIST, cue, smpl and the rest) are still skipped and not surfaced on read.
 //
-// Every string field below is written ASCII and NUL-padded to a fixed wire
-// width; Config.validate rejects a value that does not fit rather than
-// truncating it. UMID is binary and written verbatim; the five loudness
-// fields are signed little-endian int16 values. Version gates those last two
-// groups, and validate keeps Version and the fields consistent: see the field
-// documentation below.
+// Every string field below is written as ASCII that also admits CR and LF (see
+// [Bext.Description]). The three fixed-width fields are NUL-padded to their wire
+// width, and Config.validate rejects a value that does not fit rather than
+// truncating it; CodingHistory is the exception, the variable-length tail
+// appended raw after the fixed body. UMID is binary and written verbatim; the
+// five loudness fields are signed little-endian int16 values. Version gates
+// those last two groups, and validate keeps Version and the fields consistent:
+// see the field documentation below.
 type Bext struct {
 	// Description is free text describing the sound sequence. NUL-padded to
-	// 256 bytes on the wire; must not exceed that width.
+	// 256 bytes on the wire; must not exceed that width. Besides printable
+	// ASCII it accepts CR (0x0D) and LF (0x0A), because field recorders pack
+	// CRLF-separated key=value metadata here and a decoded chunk must be able to
+	// re-encode unchanged; every other control byte, and anything outside
+	// ASCII, is refused. Originator and OriginatorReference take the same
+	// character set.
 	Description string
 
 	// Originator names the producing device or station. NUL-padded to 32
-	// bytes on the wire; must not exceed that width.
+	// bytes on the wire; must not exceed that width. Same character set as
+	// Description.
 	Originator string
 
 	// OriginatorReference is an unambiguous reference allocated by the
 	// originator. NUL-padded to 32 bytes on the wire; must not exceed that
-	// width.
+	// width. Same character set as Description.
 	OriginatorReference string
 
 	// OriginationDate is the date of creation, formatted "YYYY-MM-DD", the
@@ -114,10 +122,10 @@ type Bext struct {
 
 	// CodingHistory is a free text record of the coding processes applied to
 	// the audio. It is appended after the fixed 602-byte body and may be
-	// empty. Unlike the fixed-width text fields above, EBU Tech 3285 defines
-	// CodingHistory as multiple rows, one per transcoding step, each
-	// terminated by CR (0x0D) then LF (0x0A); those two bytes are the only
-	// control characters this field accepts.
+	// empty. EBU Tech 3285 defines it as multiple rows, one per transcoding
+	// step, each terminated by CR (0x0D) then LF (0x0A). Like the fixed-width
+	// text fields above it accepts printable ASCII plus CR and LF; every other
+	// control byte, and anything outside ASCII, is refused.
 	CodingHistory string
 }
 
@@ -135,13 +143,13 @@ const (
 // validate reports the first problem with a bext descriptor, or nil. The op
 // names the calling entry point, matching Config.validate.
 func (b *Bext) validate(op string) error {
-	if err := checkASCIIWidth(op, "Description", b.Description, bextDescriptionSize); err != nil {
+	if err := checkTextWidth(op, "Description", b.Description, bextDescriptionSize); err != nil {
 		return err
 	}
-	if err := checkASCIIWidth(op, "Originator", b.Originator, bextOriginatorSize); err != nil {
+	if err := checkTextWidth(op, "Originator", b.Originator, bextOriginatorSize); err != nil {
 		return err
 	}
-	if err := checkASCIIWidth(op, "OriginatorReference", b.OriginatorReference, bextOriginatorReferenceSize); err != nil {
+	if err := checkTextWidth(op, "OriginatorReference", b.OriginatorReference, bextOriginatorReferenceSize); err != nil {
 		return err
 	}
 	if err := checkDateTime(op, "OriginationDate", b.OriginationDate, time.DateOnly); err != nil {
@@ -150,7 +158,7 @@ func (b *Bext) validate(op string) error {
 	if err := checkDateTime(op, "OriginationTime", b.OriginationTime, time.TimeOnly); err != nil {
 		return err
 	}
-	if err := checkCodingHistory(op, "CodingHistory", b.CodingHistory); err != nil {
+	if err := checkText(op, "CodingHistory", b.CodingHistory); err != nil {
 		return err
 	}
 	// UMID is a bext version 1 field and the loudness values are version 2
@@ -184,40 +192,29 @@ func (b *Bext) validate(op string) error {
 	return nil
 }
 
-// checkASCIIWidth reports an error when s is not printable ASCII or exceeds
-// width bytes.
-func checkASCIIWidth(op, field, s string, width int) error {
+// checkTextWidth reports an error when s is not valid bext free text (see
+// checkText) or exceeds width bytes.
+func checkTextWidth(op, field, s string, width int) error {
 	if len(s) > width {
 		return fmt.Errorf("go-wav/pcm: %s: bext %s is %d bytes, exceeds the %d byte field",
 			op, field, len(s), width)
 	}
-	return checkASCII(op, field, s)
+	return checkText(op, field, s)
 }
 
-// checkASCII reports an error when s carries a byte outside printable ASCII,
-// 0x20 through 0x7E, the same range internal/riff uses to sanity check a
-// chunk identifier. It excludes NUL and every other control byte, which
-// would otherwise land in a field this package NUL-pads or length-prefixes
-// and corrupt the boundary with its neighbour.
-func checkASCII(op, field, s string) error {
-	for i := range len(s) {
-		if c := s[i]; c < 0x20 || c > 0x7E {
-			return fmt.Errorf("go-wav/pcm: %s: bext %s contains byte %#02x at offset %d, outside printable ASCII",
-				op, field, c, i)
-		}
-	}
-	return nil
-}
-
-// checkCodingHistory reports an error when s carries a byte outside
-// printable ASCII and outside CR (0x0D) and LF (0x0A), the row terminator
-// EBU Tech 3285 defines for CodingHistory. This is deliberately more
-// permissive than checkASCII: a real CodingHistory is multiple rows, one per
-// transcoding step, each ending CR LF, so the strict single-line check the
-// other free text fields use would make a compliant history impossible to
-// write. Every other control byte, and anything outside ASCII, is still
-// refused.
-func checkCodingHistory(op, field, s string) error {
+// checkText reports an error when s carries a byte outside printable ASCII,
+// 0x20 through 0x7E, except CR (0x0D) and LF (0x0A), which are accepted. It
+// excludes NUL and every other control byte, which would otherwise land in a
+// field this package NUL-pads or length-prefixes and corrupt the boundary with
+// its neighbour, and it excludes everything outside ASCII.
+//
+// CR and LF are accepted because the read path hands back whatever a field
+// holds, and real files put these two bytes in the free text fields: EBU Tech
+// 3285 defines CodingHistory as one CR LF terminated row per transcoding step,
+// and field recorders pack CRLF-separated key=value metadata into Description.
+// Accepting them is what lets a bext chunk read from such a file re-encode
+// unchanged rather than fail validation on bytes this library itself returned.
+func checkText(op, field, s string) error {
 	for i := range len(s) {
 		c := s[i]
 		if c == '\r' || c == '\n' {
@@ -226,7 +223,7 @@ func checkCodingHistory(op, field, s string) error {
 		if c < 0x20 || c > 0x7E {
 			return fmt.Errorf(
 				"go-wav/pcm: %s: bext %s contains byte %#02x at offset %d, outside printable ASCII "+
-					"(CR and LF are the only control bytes accepted, for row breaks)",
+					"(CR and LF are the only control bytes accepted)",
 				op, field, c, i)
 		}
 	}
