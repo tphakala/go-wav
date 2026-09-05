@@ -96,6 +96,26 @@ func TestDecoderIXMLClearedOnReset(t *testing.T) {
 	}
 }
 
+// TestDecoderIXMLNilAfterFailedReset checks that a Reset that fails invalidates
+// the decoder, so IXML reports the empty string rather than reaching into the
+// previous stream's header.
+func TestDecoderIXMLNilAfterFailedReset(t *testing.T) {
+	good := encodeFixture(t, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1, IXML: sampleIXML}, pattern(64))
+	d, err := pcm.NewDecoder(bytes.NewReader(good))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	if d.IXML() == "" {
+		t.Fatal("precondition: IXML empty for a stream that carries one")
+	}
+	if err := d.Reset(bytes.NewReader([]byte("not a wav file"))); err == nil {
+		t.Fatal("Reset onto a non-WAV stream should have failed")
+	}
+	if got := d.IXML(); got != "" {
+		t.Errorf("IXML = %q after a failed Reset, want the empty string", got)
+	}
+}
+
 // TestDecoderIXMLFirstWins checks that when a stream carries more than one iXML
 // chunk, the first is exposed and the rest ignored, matching the bext rule.
 func TestDecoderIXMLFirstWins(t *testing.T) {

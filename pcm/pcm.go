@@ -123,8 +123,9 @@ type Config struct {
 	// [Decoder.Bext], so a decoded chunk can be set here to re-encode it.
 	Bext *Bext
 
-	// IXML, when non-empty, writes an iXML chunk immediately after bext,
-	// ahead of fact and data. The chunk carries free-form XML metadata (scene,
+	// IXML, when non-empty, writes an iXML chunk immediately after bext, or
+	// after fmt when no bext is written, ahead of fact and data. The chunk
+	// carries free-form XML metadata (scene,
 	// take, track names and the like); this package writes the text verbatim
 	// rather than modelling the schema. The zero value, the empty string,
 	// writes no iXML chunk at all.
@@ -208,7 +209,7 @@ func (c Config) validate(op string) error {
 	}
 	if int64(len(c.IXML)) > int64(riff.MaxChunkPayload) {
 		return fmt.Errorf(
-			"go-wav/pcm: %s: %w: iXML chunk of %d bytes exceeds the %d this package will read back",
+			"go-wav/pcm: %s: %w: iXML chunk of %d bytes exceeds the %d bytes this package will read back",
 			op, wav.ErrTooLarge, len(c.IXML), riff.MaxChunkPayload)
 	}
 	return nil
