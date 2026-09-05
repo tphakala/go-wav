@@ -10,11 +10,15 @@ import (
 	wav "github.com/tphakala/go-wav"
 )
 
-// maxChunkPayload bounds how much of an auxiliary chunk the reader will hold in
+// MaxChunkPayload bounds how much of an auxiliary chunk the reader will hold in
 // memory. A size field is attacker-controlled, so a chunk claiming gigabytes
 // must not cause a matching allocation; anything larger than this is skipped
 // rather than buffered. It is far above any real fmt or ds64 chunk.
-const maxChunkPayload = 1 << 20
+//
+// It is exported so the pcm layer can refuse to write a metadata chunk larger
+// than this reader would read back, the same principle by which it refuses to
+// write a sample rate the reader rejects.
+const MaxChunkPayload = 1 << 20
 
 // Header is a parsed WAVE file header, positioned so that the next byte the
 // source yields is the first byte of audio.
@@ -39,6 +43,12 @@ type Header struct {
 	// in-memory cap. This package treats it as an opaque payload, mirroring
 	// HeaderConfig.Bext on the write side; the pcm package owns the layout.
 	Bext []byte
+
+	// IXML is the raw body of the stream's iXML chunk, or nil when the stream
+	// carried none or the chunk exceeded the in-memory cap. Like Bext it is an
+	// opaque payload, mirroring HeaderConfig.IXML on the write side; the chunk
+	// carries free-form XML this package does not parse.
+	IXML []byte
 }
 
 // DataSizeUnknown reports whether the data chunk length was undeterminable, in
@@ -68,6 +78,8 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 		haveData   bool
 		bextBody   []byte
 		haveBext   bool
+		ixmlBody   []byte
+		haveIXML   bool
 	)
 
 	for !haveData {
@@ -128,6 +140,21 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 				bextBody = payload
 			}
 
+		case idIXML:
+			payload, rerr := readPayload(br, size)
+			if rerr != nil {
+				return nil, rerr
+			}
+			// First-wins, mirroring bext: the payload is read either way so the
+			// walk stays aligned, and haveIXML is set even when readPayload
+			// yielded nil for a body past the in-memory cap, so that "no iXML"
+			// verdict stands rather than being overridden by a smaller later
+			// chunk.
+			if !haveIXML {
+				haveIXML = true
+				ixmlBody = payload
+			}
+
 		case idData:
 			// The data chunk is not consumed; the caller streams it.
 			dataSize = resolveDataSize(size, container, haveDS64, ds64)
@@ -162,6 +189,7 @@ func ParseHeader(br *bufio.Reader) (*Header, error) {
 		DataSize:   dataSize,
 		BlockAlign: fmtChunk.BlockAlign,
 		Bext:       bextBody,
+		IXML:       ixmlBody,
 		Info: wav.StreamInfo{
 			SampleRate:     fmtChunk.SampleRate,
 			Channels:       fmtChunk.Channels,
@@ -317,7 +345,7 @@ func readChunkHeader(br *bufio.Reader) (id string, size uint32, err error) {
 // chunks are skipped rather than buffered, so a hostile size field cannot drive
 // an allocation.
 func readPayload(br *bufio.Reader, size uint32) ([]byte, error) {
-	if int64(size) > maxChunkPayload {
+	if int64(size) > MaxChunkPayload {
 		if err := discardN(br, int64(size)); err != nil {
 			return nil, err
 		}

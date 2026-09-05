@@ -58,6 +58,14 @@ linters:
       settings:
         ruleguard:
           rules: "rules/*.go"
+        hugeParam:
+          # Config (88 bytes) is deliberately passed by value: it is the public
+          # encoder API surface (NewEncoder, Reset, EncodeInterleaved) and is
+          # built once per stream, never in a hot loop. Keep the threshold above
+          # it so that by-value API does not trip the check. It stays below the
+          # larger HeaderConfig (136 bytes), which keeps its explicit by-value
+          # nolint directives in internal/riff.
+          sizeThreshold: 128
     revive:
       rules:
         - name: unused-parameter

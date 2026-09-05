@@ -37,6 +37,12 @@ type HeaderConfig struct {
 	// bext layout and validates its fields, which is what keeps this package
 	// format agnostic. A nil or empty slice writes no bext chunk at all.
 	Bext []byte
+
+	// IXML is the raw body of an iXML chunk to write immediately after bext,
+	// or nil to write none. Like Bext it is an opaque payload the pcm layer
+	// bounds and hands over; this package writes the bytes verbatim. A nil or
+	// empty slice writes no iXML chunk at all.
+	IXML []byte
 }
 
 // Layout is an emitted header plus the offsets a caller needs in order to
@@ -167,6 +173,21 @@ func BuildHeader(cfg HeaderConfig) (*Layout, error) {
 		}
 	}
 
+	// An iXML chunk, when present, sits right after bext and before fact or
+	// data, the placement recorders use. Like bext it is never patched, so it
+	// carries no offset in Layout: the caller supplies the whole payload.
+	if len(cfg.IXML) > 0 {
+		ixmlSize, err := u32("iXML chunk size", int64(len(cfg.IXML)))
+		if err != nil {
+			return nil, err
+		}
+		buf = appendChunkHeader(buf, idIXML, ixmlSize)
+		buf = append(buf, cfg.IXML...)
+		if len(cfg.IXML)%2 != 0 {
+			buf = append(buf, 0)
+		}
+	}
+
 	// The fact chunk is mandatory for every non-PCM encoding, which for this
 	// library means float.
 	if writeFact {
@@ -291,6 +312,9 @@ func HeaderLen(cfg HeaderConfig) int64 {
 	n += int64(ChunkHeaderSize) + int64(fmtPayloadLen(cfg.Format))
 	if len(cfg.Bext) > 0 {
 		n += int64(ChunkHeaderSize) + padded(int64(len(cfg.Bext)))
+	}
+	if len(cfg.IXML) > 0 {
+		n += int64(ChunkHeaderSize) + padded(int64(len(cfg.IXML)))
 	}
 	if cfg.Format.Format == wav.SampleFormatFloat {
 		n += int64(ChunkHeaderSize) + int64(factPayloadSize)

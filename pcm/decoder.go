@@ -377,6 +377,26 @@ func (d *Decoder) Bext() (*Bext, error) {
 	return d.bext, d.bextErr
 }
 
+// IXML returns the stream's iXML chunk, the free-form XML metadata (scene,
+// take, track names and the like) that recorders write alongside bext, or the
+// empty string when the stream carried none or the chunk exceeded the reader's
+// in-memory cap.
+//
+// The text is returned as stored: this package does not parse the XML, so a
+// caller reads it with an XML decoder of its own. The conversion to string
+// copies the bytes, so the result cannot alias the decoder's buffer, and it can
+// be handed straight to Config.IXML to re-encode the chunk. Unlike Read it
+// serves header metadata, so like Info and Bext it is valid after a mid-stream
+// read error, and after a failed reset d.hdr is nil so it reports the empty
+// string rather than a chunk from a stale stream. There is nothing to parse and
+// so nothing to fail, hence no error.
+func (d *Decoder) IXML() string {
+	if d.hdr == nil {
+		return ""
+	}
+	return string(d.hdr.IXML)
+}
+
 // Read reads interleaved samples into p and returns how many bytes it wrote.
 //
 // It is an ordinary io.Reader and returns short reads. Without a conversion a

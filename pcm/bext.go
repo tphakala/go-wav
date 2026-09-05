@@ -43,9 +43,9 @@ const (
 // identical to a Config that never mentions this type.
 //
 // A decoder exposes the bext chunk of a stream it opens through
-// [Decoder.Bext], which parses it back into this same type. The other metadata
-// chunks (LIST, cue, smpl, iXML and the rest) are still skipped and not
-// surfaced on read.
+// [Decoder.Bext], which parses it back into this same type. The iXML chunk has
+// its own pair, [Config.IXML] and [Decoder.IXML]; the other metadata chunks
+// (LIST, cue, smpl and the rest) are still skipped and not surfaced on read.
 //
 // Every string field below is written ASCII and NUL-padded to a fixed wire
 // width; Config.validate rejects a value that does not fit rather than

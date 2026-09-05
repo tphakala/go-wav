@@ -20,6 +20,7 @@ const (
 	idFact = "fact"
 	idJUNK = "JUNK"
 	idBext = "bext"
+	idIXML = "iXML"
 )
 
 // Structural sizes fixed by the format.
@@ -73,7 +74,7 @@ const maxUint32 = int64(1)<<32 - 1
 // known there is nothing to divide by and the bare ceiling applies. The 32-bit
 // size fields need no ceiling, sitting far below this one by construction, and
 // the auxiliary chunk payloads the reader buffers are bounded separately by
-// maxChunkPayload.
+// MaxChunkPayload.
 const maxDataSize uint64 = 1 << 62
 
 // MaxSampleRate is the highest sample rate this package will read from, or

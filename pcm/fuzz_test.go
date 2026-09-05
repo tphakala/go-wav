@@ -29,6 +29,10 @@ func FuzzDecode(f *testing.F) {
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 8000, BitDepth: 8, Channels: 1}, pattern(7)))
 	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
 		RF64: pcm.RF64Always}, pattern(64)))
+	// A file carrying an iXML metadata chunk, so a mutation reaches the reader's
+	// iXML branch with a header the fuzzer would rarely assemble on its own.
+	f.Add(encodeFixture(f, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1,
+		IXML: `<BWFXML><TAKE>001</TAKE></BWFXML>`}, pattern(64)))
 	// The two companding laws, which no encoder here can produce, so their
 	// seeds are hand-built. They are the one source the decoder expands
 	// without being asked, so a mutation of one reaches that path with a
