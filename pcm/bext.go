@@ -47,14 +47,16 @@ const (
 // its own pair, [Config.IXML] and [Decoder.IXML]; the other metadata chunks
 // (LIST, cue, smpl and the rest) are still skipped and not surfaced on read.
 //
-// Every string field below is written as ASCII that also admits CR and LF (see
-// [Bext.Description]). The three fixed-width fields are NUL-padded to their wire
-// width, and Config.validate rejects a value that does not fit rather than
-// truncating it; CodingHistory is the exception, the variable-length tail
-// appended raw after the fixed body. UMID is binary and written verbatim; the
-// five loudness fields are signed little-endian int16 values. Version gates
-// those last two groups, and validate keeps Version and the fields consistent:
-// see the field documentation below.
+// The string fields below are written as ASCII. The free-text fields also admit
+// CR and LF (see [Bext.Description]); OriginationDate and OriginationTime instead
+// take the fixed date and time forms checkDateTime enforces. The three
+// fixed-width free-text fields are NUL-padded to their wire width, and
+// Config.validate rejects a value that does not fit rather than truncating it;
+// CodingHistory is the exception, the variable-length tail appended raw after the
+// fixed body. UMID is binary and written verbatim; the five loudness fields are
+// signed little-endian int16 values. Version gates those last two groups, and
+// validate keeps Version and the fields consistent: see the field documentation
+// below.
 type Bext struct {
 	// Description is free text describing the sound sequence. NUL-padded to
 	// 256 bytes on the wire; must not exceed that width. Besides printable
