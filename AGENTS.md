@@ -43,7 +43,7 @@ A change that violates one of these is wrong even if tests pass.
    - `ErrDecodeLimit` (in `pcm`) is a resource limit, not a verdict on the file. Keep it distinct from `ErrCorruptStream`.
 6. **The reader tolerates what real files get wrong, and nothing about the sample format.** Accepted: a missing pad byte after an odd chunk, a data size of 0 or `0xFFFFFFFF`, a declared size past the end of the file, trailing bytes, chunks in any order before fmt and data, unknown chunks anywhere, a wrong `nBlockAlign` (replaced by the derived value), a `ValidBits` wider than its container (reported absent). Refused: zero channels, zero sample rate, a rate above `MaxSampleRate`, an undecodable format. Never guess a sample format. See `internal/riff/doc.go` before touching this.
 7. **`StreamInfo.TotalFrames` is a claim, not a count.** A truncated file reports the length it was given. `DataSizeKnown` says whether the claim came with a boundary the decoder bounds reads and seeks by. Do not turn either into a promise that the audio is present.
-8. **RF64 policy.** `RF64Auto` (the default) writes RIFF with a `JUNK` chunk sized exactly like a `ds64`, and upgrades the header in place if the stream outgrows 4 GiB; that needs a seekable sink. A non-seekable sink needs `Config.TotalFrames` declared up front, and `Close` errors if the written count differs. Nothing here is allowed to write a header that disagrees with the audio.
+8. **RF64 policy.** `RF64Auto` (the default) writes RIFF with a `JUNK` chunk sized exactly like a `ds64`, and upgrades the header in place if the stream outgrows 4 GiB; that needs a seekable sink. A non-seekable sink needs `Config.TotalFrames` declared up front to survive past 4 GiB (`RF64Always` requires it, and `NewEncoder` rejects the combination without it), and `Close` errors if the written count differs. Nothing here is allowed to write a header that disagrees with the audio.
 9. **`Info()` describes what `Read` yields, not what is on disk.** The stored encoding stays in `SourceFormat` and `SourceBitDepth`. A-law and mu-law are always expanded to linear 16-bit, with or without `WithConvertTo`. Default decode is otherwise a pass-through of stored bytes.
 10. **Bounded one-shot decodes.** `DecodeInterleaved` stops at `DefaultMaxDecodedBytes` (1 GiB) with a wrapped `ErrDecodeLimit`; `DecodeInterleavedLimit` takes the ceiling. The up-front reservation derived from the header's frame count is capped (`maxPreSize`) and by the ceiling, because that count is an unchecked claim.
 11. **`DecodeInterleavedBytes` aliasing is documented behaviour.** When the stored bytes are returned unchanged, the result aliases the caller's slice; under `WithConvertTo`, or for a companded source, it is a fresh buffer. Keep the README and godoc statement true when you change either path. The `io.Reader` form always allocates.
@@ -78,7 +78,7 @@ rules/               gocritic ruleguard matchers (lint-only)
 Tests run without audio hardware. The ffmpeg and sox cross-validation tests (`pcm/crossvalidate*_test.go`) skip when the tool is absent.
 
 - **Regression tests.** New behaviour gets a test. A bug fix gets a regression test that fails before the fix. A test must be able to fail: break the line it pins and confirm it fails, and avoid fixtures where every path gives the same result.
-- **Fuzzing.** CI runs a short smoke of `FuzzParseHeader` (`internal/riff`), `FuzzDecode`, `FuzzDecodeSeek`, `FuzzParseBext`, `FuzzRoundTrip` (`pcm`) and `FuzzConvertCompanded` (`internal/sample`). A `-fuzz` pattern that matches nothing passes without running, so run a new target in the package that defines it. New parsing paths get a fuzz target or a seed under `testdata/fuzz`. Discovered crashers are committed as regression data.
+- **Fuzzing.** CI runs a short smoke of `FuzzParseHeader` (`internal/riff`), `FuzzDecode`, `FuzzDecodeSeek`, `FuzzParseBext`, `FuzzRoundTrip` (`pcm`) and `FuzzConvertCompanded` (`internal/sample`). A `-fuzz` pattern that matches nothing passes without running, so run a new target in the package that defines it. New parsing paths get a fuzz target, and a crasher becomes a seed under `testdata/fuzz` (none exist yet). Discovered crashers are committed as regression data.
 - **Cross-validation.** Anything that changes emitted bytes or decoded samples is checked against ffmpeg and sox over the supported depths and rates. Both companding laws are checked over all 256 codes.
 - **Large files.** The 4 GiB behaviour is tested without writing 4 GiB (sparse or synthetic sinks and sources, `rf64_test.go`, `seek_unknown_length_test.go`). Keep new large-size tests off real disk.
 - **Plan consistency.** `plan_consistency_test.go` pins that the header length the encoder plans agrees with its capacity check; a change to header layout or chunk placement extends it.
@@ -87,7 +87,7 @@ Tests run without audio hardware. The ffmpeg and sox cross-validation tests (`pc
 
 ## Commands
 
-Go version is read from `go.mod` (currently 1.26); the golangci-lint version is pinned in `.github/workflows/ci.yml` (`GOLANGCI_LINT_VERSION`) and must match the local toolchain, so the git hooks, `task lint` and CI run the same linter.
+Go version is set in `go.mod` (currently 1.26) and, separately, as `GO_VERSION` in `ci.yml`; keep the two in step; the golangci-lint version is pinned in `.github/workflows/ci.yml` (`GOLANGCI_LINT_VERSION`) and must match the local toolchain, so the git hooks, `task lint` and CI run the same linter.
 
 ```
 task build         # go build ./...
@@ -102,18 +102,18 @@ task check         # build, vet, lint, race tests
 task hooks:install # git config core.hooksPath .githooks
 ```
 
-Run `task check` before pushing. CI additionally runs the 386 test job, the vet and cross-build matrix (amd64, arm64, 386, arm; Linux, macOS, Windows), the fuzz smoke job, govulncheck and OpenSSF Scorecard.
+Run `task check` before pushing. CI additionally runs the 386 test job, the vet matrix (amd64, arm64, 386, arm, on Linux) and the cross-build matrix (Linux, macOS, Windows), the fuzz smoke job, govulncheck and OpenSSF Scorecard.
 
 ## Conventions
 
 - **Lint.** Config is `.golangci.yaml`; strict by default. gocritic runs the ruleguard matchers in `rules/` for modern-Go patterns.
 - **No `//nolint` without a linter name and a reason.** If a linter is wrong often enough to silence globally, change `.golangci.yaml` with a comment saying why.
-- **Errors.** Error strings carry the `go-wav:` prefix (`go-wav/pcm:` in the `pcm` package). Wrap with `%w`; use `errors.New` for constant messages.
+- **Errors.** Error strings carry the `go-wav:` prefix (`go-wav/pcm:` in the `pcm` package; `internal/riff` and `internal/sample` use their own prefixes). Wrap with `%w`; use `errors.New` for constant messages.
 - **Comments.** Explain why: the chunk layout and spec clause where it is not obvious, the failure being avoided, the measurement behind a constant. Match the existing density; the long rationale comments on `DefaultMaxDecodedBytes` and `maxPreSize` are the model for a limit's documentation.
 - **Docs follow code.** A behaviour change updates the package doc (`doc.go`, `pcm/doc.go`, `internal/*/doc.go`), the README and the sentinel's comment in `errors.go` in the same change. The README and godoc make precise claims (aliasing, which formats are written, which limits apply); a sentence that is false for some format or container is a defect.
 - **Commits** use an imperative subject with a type prefix (`feat:`, `fix:`, `docs:`, `build:`, `ci:`, `chore:`, `refactor:`, `test:`), optionally scoped (`feat(pcm): ...`), with `!` for a breaking change.
-- **Git hooks.** `.githooks/pre-commit` runs gofmt and golangci-lint on staged Go files; `pre-push` guards the commit identity (only the GitHub noreply address is allowed). Do not bypass either.
-- **Dependencies.** Dependabot keeps Go modules and GitHub Actions current. Workflow actions are pinned.
+- **Git hooks.** `.githooks/pre-commit` runs gofmt and golangci-lint on staged Go files (lint covers the whole tree); `pre-push` guards the commit identity (only the GitHub noreply address is allowed) and runs build and vet. Do not bypass either.
+- **Dependencies.** Dependabot keeps Go modules and GitHub Actions current. Workflow actions are pinned to major version tags.
 
 ## Review guidance
 
