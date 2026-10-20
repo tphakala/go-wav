@@ -23,6 +23,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          check-latest: true
 
       # wav.Version is referenced nowhere but its own declaration, so no build
       # or test can notice it has gone stale. The tag is the missing input, and
