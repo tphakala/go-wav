@@ -141,7 +141,7 @@ func presizeHint(info wav.StreamInfo, maxBytes int) int {
 // filling hint. A read error other than the end of the stream is returned as it
 // came, after the limit check on any byte the failing read did deliver.
 func readAllLimit(d *Decoder, hint, limit int) ([]byte, error) {
-	var buf []byte // nil while nothing is reserved, so an empty stream returns nil
+	var buf []byte // stays nil when nothing is reserved and nothing is read
 	if hint = min(hint, limit); hint > 0 {
 		buf = make([]byte, 0, hint)
 	}

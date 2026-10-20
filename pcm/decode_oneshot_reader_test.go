@@ -340,6 +340,35 @@ func TestDecodeInterleavedReaderIgnoreLength(t *testing.T) {
 	}
 }
 
+// TestDecodeInterleavedNoAudioReturnsNil pins that a stream with no audio and
+// no declared frame count comes back from the reader one-shot as a nil slice,
+// not an empty non-nil one, as it did when the result was an unwritten
+// bytes.Buffer. The TotalFrames check guards the premise: a non-zero count
+// would reserve capacity and make the result non-nil for that reason alone.
+func TestDecodeInterleavedNoAudioReturnsNil(t *testing.T) {
+	file := encodeFixture(t, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}, nil)
+
+	for name, opts := range map[string][]pcm.Option{
+		"default":         nil,
+		"ignore length":   {pcm.WithIgnoreLength()},
+		"narrowing":       {pcm.WithConvertTo(8)},
+		"widening ignore": {pcm.WithConvertTo(32), pcm.WithIgnoreLength()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, info, err := pcm.DecodeInterleaved(bytes.NewReader(file), opts...)
+			if err != nil {
+				t.Fatalf("DecodeInterleaved: %v", err)
+			}
+			if info.TotalFrames != 0 {
+				t.Fatalf("TotalFrames = %d, want 0 for this fixture", info.TotalFrames)
+			}
+			if got != nil {
+				t.Errorf("samples = %d bytes (non-nil) for a stream with no audio, want nil", len(got))
+			}
+		})
+	}
+}
+
 // TestDecodeInterleavedDefaultCeiling checks that the default entry point decodes
 // an ordinary stream, which sits far below DefaultMaxDecodedBytes, without
 // tripping the limit.
