@@ -130,3 +130,31 @@ func TestConvertedBytesFitAgreesWithConvertedLen(t *testing.T) {
 		}
 	}
 }
+
+// TestNextCapDoesNotOverflow checks that growth stops at the limit and that the
+// doubling cannot wrap an int. 2*c is negative for the first row, which would
+// panic in make on a 32-bit target.
+func TestNextCapDoesNotOverflow(t *testing.T) {
+	cases := []struct {
+		name     string
+		c, limit int
+		want     int
+	}{
+		{"doubles", 1000, math.MaxInt, 2000},
+		{"clamps to the limit", 600, 1000, 1000},
+		{"no reservation starts at a streaming buffer", 0, math.MaxInt, streamBufferSize},
+		{"no reservation under a small limit", 0, 100, 100},
+		{"doubling would pass MaxInt", math.MaxInt/2 + 1, math.MaxInt, math.MaxInt},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nextCap(tc.c, tc.limit)
+			if got != tc.want {
+				t.Errorf("nextCap(%d, %d) = %d, want %d", tc.c, tc.limit, got, tc.want)
+			}
+			if got > tc.limit {
+				t.Errorf("nextCap(%d, %d) = %d exceeds the limit", tc.c, tc.limit, got)
+			}
+		})
+	}
+}

@@ -70,19 +70,19 @@ func DecodeInterleavedLimit(r io.Reader, maxBytes int, opts ...Option) ([]byte, 
 	}
 	info := d.Info()
 
-	var buf bytes.Buffer
+	// A ceiling of zero or less is no ceiling; no slice can outgrow MaxInt.
+	limit := maxBytes
+	if limit <= 0 {
+		limit = math.MaxInt
+	}
 	// Pre-size from the declared length so the common case allocates once
 	// instead of growing by doubling. presizeHint bounds the reservation; see
 	// there for why the declared count is not trusted directly.
-	if n := presizeHint(info, maxBytes); n > 0 {
-		buf.Grow(n)
-	}
-
-	cw := &cappedWriter{buf: &buf, max: maxBytes}
-	if _, err := d.WriteTo(cw); err != nil {
+	samples, err := readAllLimit(d, presizeHint(info, maxBytes), limit)
+	if err != nil {
 		return nil, info, err
 	}
-	return buf.Bytes(), info, nil
+	return samples, info, nil
 }
 
 // maxPreSize caps the up-front buffer reservation the one-shot makes from the
@@ -90,7 +90,7 @@ func DecodeInterleavedLimit(r io.Reader, maxBytes int, opts ...Option) ([]byte, 
 // against the audio, so without a cap a file declaring a huge total would drive
 // a reservation of up to the whole ceiling before a single sample is decoded,
 // which is the very small-input-large-allocation hazard the ceiling exists to
-// stop. cappedWriter still enforces the real ceiling on the bytes actually
+// stop. readAllLimit still enforces the real ceiling on the bytes actually
 // produced, so this only bounds the initial guess: a genuinely large stream
 // grows past it by doubling.
 const maxPreSize = 32 << 20 // 32 MiB
@@ -119,25 +119,71 @@ func presizeHint(info wav.StreamInfo, maxBytes int) int {
 	return int(hint)
 }
 
-// cappedWriter accumulates into buf and refuses a write that would carry the
-// total past max. It writes nothing on the failing call, so buf holds only the
-// whole blocks WriteTo delivered up to the point the limit was hit. A max of
-// zero or less is unbounded.
-type cappedWriter struct {
-	buf *bytes.Buffer
-	n   int
-	max int
+// readAllLimit reads d to the end into a freshly allocated slice and refuses a
+// stream that would produce more than limit bytes. hint is the initial
+// capacity, already bounded by presizeHint.
+//
+// It reads with d.Read into the result's own spare capacity rather than
+// draining through [Decoder.WriteTo], or [io.Copy], which calls WriteTo on a
+// source that has one (go1.27.3 src/io/io.go:410). WriteTo stages every block
+// in its own buffer and the destination copies it again, so each byte of a
+// pass-through stream would be copied twice; here the source fills the result
+// directly.
+//
+// The capacity never exceeds limit, so the ceiling is exact: an output of
+// limit bytes is returned and one of limit+1 is refused. When the slice is full
+// the loop reads a single probe byte before it grows. At an exact fit the probe
+// reports the end of the stream and the result is returned without a
+// reallocation; at the ceiling a probe byte is what decides the limit.
+//
+// A stream that ends before filling the reservation is not an error, which is
+// how [Decoder.Read] treats a file cut short, so the loop must not insist on
+// filling hint. A read error other than the end of the stream is returned as it
+// came, after the limit check on any byte the failing read did deliver.
+func readAllLimit(d *Decoder, hint, limit int) ([]byte, error) {
+	var buf []byte // nil while nothing is reserved, so an empty stream returns nil
+	if hint = min(hint, limit); hint > 0 {
+		buf = make([]byte, 0, hint)
+	}
+	var probe [1]byte
+	for {
+		dst := buf[len(buf):cap(buf)]
+		probing := len(dst) == 0
+		if probing {
+			dst = probe[:]
+		}
+		n, err := d.Read(dst)
+		if probing && n > 0 {
+			if len(buf) >= limit {
+				return nil, fmt.Errorf(
+					"go-wav/pcm: DecodeInterleaved: %w: output would exceed %d bytes",
+					ErrDecodeLimit, limit)
+			}
+			grown := make([]byte, len(buf)+1, nextCap(cap(buf), limit))
+			copy(grown, buf)
+			grown[len(buf)] = probe[0]
+			buf = grown
+		} else {
+			buf = buf[:len(buf)+n]
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return buf, nil
+			}
+			return nil, err
+		}
+	}
 }
 
-func (c *cappedWriter) Write(p []byte) (int, error) {
-	if c.max > 0 && c.n > c.max-len(p) {
-		return 0, fmt.Errorf(
-			"go-wav/pcm: DecodeInterleaved: %w: output would exceed %d bytes",
-			ErrDecodeLimit, c.max)
+// nextCap returns the capacity to grow to from c: double, but never past limit.
+// It is written as c + min(c, limit-c) so the sum cannot overflow an int, which
+// 2*c would on a 32-bit target. Callers pass c < limit. A c of zero, which is
+// a stream with no reservation, starts at one streaming buffer's worth.
+func nextCap(c, limit int) int {
+	if c == 0 {
+		return min(streamBufferSize, limit)
 	}
-	n, err := c.buf.Write(p)
-	c.n += n
-	return n, err
+	return c + min(c, limit-c)
 }
 
 // oneshotDecoder pairs a decoder with the reader it parses through. Holding the

@@ -62,7 +62,7 @@ pcm/pcm.go           Config, RF64Mode, validation
 pcm/encoder.go       Encoder (io.WriteCloser), header patch and RF64 upgrade at Close
 pcm/encode_oneshot.go  EncodeInterleaved (pooled)
 pcm/decoder.go       Decoder (io.Reader, io.WriterTo, seeking), options, Info, Bext, IXML
-pcm/decode_oneshot.go  DecodeInterleaved, DecodeInterleavedLimit, DecodeInterleavedBytes, ErrDecodeLimit, cappedWriter
+pcm/decode_oneshot.go  DecodeInterleaved, DecodeInterleavedLimit, DecodeInterleavedBytes, ErrDecodeLimit, readAllLimit
 pcm/bext.go          Bext type, parse and marshal, versioned fields
 
 internal/riff/       chunk.go (limits, sentinels), reader.go (chunk walk, header parse),

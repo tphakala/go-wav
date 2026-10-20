@@ -70,7 +70,13 @@ func FuzzDecode(f *testing.F) {
 
 			// Draining must terminate and must not panic.
 			var streamed bytes.Buffer
-			if _, err := io.Copy(&streamed, d); err != nil {
+			_, drainErr := io.Copy(&streamed, d)
+
+			// The reader one-shot drains the same stream through its own read
+			// loop, so it has to agree with the streaming drain on whether the
+			// stream is readable and on every byte of it.
+			checkReaderOneShot(t, data, opts, info, streamed.Bytes(), drainErr)
+			if drainErr != nil {
 				continue
 			}
 
@@ -343,4 +349,44 @@ func FuzzParseBext(f *testing.F) {
 			t.Fatalf("ParseBext(%d bytes) returned (nil, nil), want a descriptor", len(data))
 		}
 	})
+}
+
+// checkReaderOneShot compares DecodeInterleavedLimit over data with the bytes
+// and error the streaming decoder produced for the same options. A ceiling of
+// zero is the unbounded read; the ceilings n and n-1 check the boundary at the
+// size the stream really has.
+func checkReaderOneShot(t *testing.T, data []byte, opts []pcm.Option, info wav.StreamInfo, streamed []byte, drainErr error) {
+	t.Helper()
+	got, gotInfo, err := pcm.DecodeInterleavedLimit(bytes.NewReader(data), 0, opts...)
+	if (drainErr == nil) != (err == nil) {
+		t.Fatalf("DecodeInterleavedLimit error = %v, but draining the decoder gave %v", err, drainErr)
+	}
+	if err != nil {
+		if got != nil {
+			t.Fatalf("DecodeInterleavedLimit returned %d bytes alongside error %v", len(got), err)
+		}
+		return
+	}
+	if gotInfo != info {
+		t.Fatalf("StreamInfo: DecodeInterleavedLimit reports %+v, the decoder reports %+v", gotInfo, info)
+	}
+	if !bytes.Equal(got, streamed) {
+		t.Fatalf("audio: DecodeInterleavedLimit returned %d bytes, the decoder returned %d", len(got), len(streamed))
+	}
+
+	n := len(streamed)
+	if n == 0 {
+		return
+	}
+	exact, _, err := pcm.DecodeInterleavedLimit(bytes.NewReader(data), n, opts...)
+	if err != nil || !bytes.Equal(exact, streamed) {
+		t.Fatalf("a ceiling of exactly %d bytes gave %d bytes and error %v", n, len(exact), err)
+	}
+	if n > 1 {
+		under, _, err := pcm.DecodeInterleavedLimit(bytes.NewReader(data), n-1, opts...)
+		if !errors.Is(err, pcm.ErrDecodeLimit) || under != nil {
+			t.Fatalf("a ceiling of %d bytes under a %d byte stream gave %d bytes and error %v",
+				n-1, n, len(under), err)
+		}
+	}
 }
