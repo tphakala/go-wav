@@ -115,13 +115,13 @@ func TestDecodeInterleavedLimit(t *testing.T) {
 	})
 
 	t.Run("non-positive ceiling is unbounded", func(t *testing.T) {
-		for _, max := range []int{0, -1} {
-			samples, _, err := pcm.DecodeInterleavedLimit(bytes.NewReader(file), max)
+		for _, limit := range []int{0, -1} {
+			samples, _, err := pcm.DecodeInterleavedLimit(bytes.NewReader(file), limit)
 			if err != nil {
-				t.Fatalf("DecodeInterleavedLimit(max=%d): %v", max, err)
+				t.Fatalf("DecodeInterleavedLimit(max=%d): %v", limit, err)
 			}
 			if !bytes.Equal(samples, payload) {
-				t.Errorf("max=%d: samples = %d bytes, want %d", max, len(samples), len(payload))
+				t.Errorf("max=%d: samples = %d bytes, want %d", limit, len(samples), len(payload))
 			}
 		}
 	})
