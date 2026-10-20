@@ -132,8 +132,8 @@ func TestConvertedBytesFitAgreesWithConvertedLen(t *testing.T) {
 }
 
 // TestNextCapDoesNotOverflow checks that growth stops at the limit and that the
-// doubling cannot wrap an int. 2*c is negative for the first row, which would
-// panic in make on a 32-bit target.
+// doubling cannot wrap an int. In the "doubling would pass MaxInt" case 2*c is
+// negative, which would panic in make.
 func TestNextCapDoesNotOverflow(t *testing.T) {
 	cases := []struct {
 		name     string
