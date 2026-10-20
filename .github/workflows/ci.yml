@@ -33,6 +33,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
 
       - name: Download dependencies
         run: go mod download
@@ -72,6 +73,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Download dependencies
         run: go mod download
 
@@ -94,6 +96,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -118,6 +121,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Run go vet
         env:
           GOARCH: ${{ matrix.goarch }}
@@ -150,6 +154,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -168,6 +173,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       # A short bounded run of each decode-path fuzz target on every build. The
       # reader parses untrusted bytes, so this guards against panics and
       # unbounded allocation on malformed input; a crash a run finds is
