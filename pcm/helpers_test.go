@@ -266,3 +266,78 @@ func drainInto(tb testing.TB, file []byte, convert, bufSize int) []byte {
 		}
 	}
 }
+
+// errOnceReader serves data normally except for one read: the first call that
+// would cross offset at hands back the bytes up to at TOGETHER with err, in a
+// single (n, err) return, and the source then carries on from at. A source that
+// errors on a separate call never exercises a decoder path that has to keep
+// bytes it received alongside an error.
+type errOnceReader struct {
+	data  []byte
+	pos   int
+	at    int
+	err   error
+	armed bool
+	fired bool
+}
+
+func (r *errOnceReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	if r.armed && !r.fired && r.pos < r.at && r.pos+len(p) >= r.at {
+		n := copy(p, r.data[r.pos:r.at])
+		r.pos += n
+		r.fired = true
+		return n, r.err
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// scriptStep is one scripted source read: it delivers up to n bytes and then
+// returns err.
+type scriptStep struct {
+	n   int
+	err error
+}
+
+// scriptedReader serves the first header bytes normally (never past them, so
+// the decoder's header parse leaves the audio untouched), then follows steps
+// one read at a time, then serves the rest normally. calls counts the reads
+// made after the header, so a test can assert how many a Read cost.
+type scriptedReader struct {
+	data   []byte
+	pos    int
+	header int
+	steps  []scriptStep
+	calls  int
+}
+
+func (r *scriptedReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	if r.pos < r.header {
+		n := copy(p[:min(len(p), r.header-r.pos)], r.data[r.pos:])
+		r.pos += n
+		return n, nil
+	}
+	r.calls++
+	if len(r.steps) == 0 {
+		n := copy(p, r.data[r.pos:])
+		r.pos += n
+		return n, nil
+	}
+	step := &r.steps[0]
+	n := copy(p[:min(len(p), step.n)], r.data[r.pos:])
+	r.pos += n
+	step.n -= n
+	if step.n > 0 {
+		return n, nil
+	}
+	err := step.err
+	r.steps = r.steps[1:]
+	return n, err
+}

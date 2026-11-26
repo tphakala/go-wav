@@ -53,26 +53,39 @@ const writeToBufferSize = 64 << 10
 //
 // It exists because the batch is otherwise sized from the caller's buffer, and
 // that buffer is the caller's to choose. Without a cap, asking for a whole
-// clip in one Read makes the decoder allocate srcWidth/dstWidth times that
+// clip in one Read makes the decoder allocate srcFrame/dstFrame times that
 // buffer to stage the source for it, which for a float64 file converted to
 // 8-bit is eight times the amount the caller thought they were asking for. A
 // cap turns that amplification into a short read, which io.Reader permits.
 //
-// The cap is also what makes the batch arithmetic safe. samples*srcWidth is a
+// The cap is also what makes the batch arithmetic safe. frames*srcFrame is a
 // native int multiplication of a caller-controlled length, so on a 32-bit
 // target a large enough buffer used to wrap it: negative, which panicked
 // slicing the staging buffer, or exactly zero, which reported a clean end of
-// stream partway through a file. Bounding the sample count by a constant
-// before the multiplication holds the product at or below this value on every
-// platform, so neither is reachable.
+// stream partway through a file. Bounding the frame count by a constant
+// before the multiplication holds the product at or below the larger of this
+// value and one frame on every platform, so neither is reachable.
 //
-// What a caller sees is that a converting Read yields at most
-// maxConvertBatch/srcWidth*dstWidth bytes however large a buffer it passes.
+// The batch is counted in frames, one sample of every channel, because only
+// whole frames are handed out. A frame is at most 524280 bytes (65535 channels
+// of 8-byte samples), which is wider than this cap, so the staged source batch
+// is at most max(maxConvertBatch, one frame). A converting Read yields at most
+// maxConvertBatch/srcFrame*dstFrame bytes however large a buffer it passes, or
+// one frame when a frame is wider than the cap.
+//
 // The bound is on the SOURCE, so a narrowing conversion is served least per
-// call: a float64 file read as 8-bit gets 8 KiB per Read, and the cap starts
-// to bind at a buffer of 8193 bytes. A widening conversion is served more,
-// which is also what bounds the converted staging buffer at four times this
-// value, the widest ratio the package supports being 8-bit to 32-bit.
+// call: a mono float64 file read as 8-bit gets 8 KiB per Read, and the cap
+// starts to bind at a buffer of 8193 bytes; with more channels the yield
+// rounds down to whole frames (8190 bytes for three). A widening conversion is served more, which is also what bounds the converted
+// staging buffer at four times this value: the widest ratio the package
+// supports is 8-bit to 32-bit, and one converted frame is at most 262140
+// bytes (65535 channels of 4-byte samples), inside that bound.
+//
+// A header that claims that many channels makes the decoder allocate up to
+// 524280 bytes, once, to stage one frame (the converting source batch, or the
+// raw staging buffer for a Read smaller than a frame). That allocation is
+// bounded by the 16-bit channel field and kept across Reset, but made before
+// the bytes are known to be present.
 //
 // It is defined as streamBufferSize rather than restating the number, so that
 // one batch stays one read of the buffered reader underneath if that window
@@ -98,8 +111,8 @@ type Option func(*config)
 // or 32.
 //
 // Without it the decoder is a pass-through for every source but the two named
-// below, and Read yields the data chunk verbatim, which means the sample
-// encoding varies with the file. Converting normalises the two traps in that:
+// below, and Read yields the data chunk's whole frames as stored, which means
+// the sample encoding varies with the file. Converting normalises the two traps in that:
 // float sources become integers, scaled by full scale and clamped, and 8-bit
 // sources become signed rather than the unsigned form WAV stores them in.
 //
@@ -126,8 +139,8 @@ func WithConvertTo(bitDepth int) Option {
 //
 // Reading to the end of the source means exactly that: anything stored after
 // the data chunk, such as a trailing LIST or id3 chunk, is handed back as
-// audio, because without a length there is nothing to tell audio and trailer
-// apart. That is the price of recovering a stream whose header lies, so the
+// audio, in whole frames with the last partial frame dropped, because without
+// a length there is nothing to tell audio and trailer apart. That is the price of recovering a stream whose header lies, so the
 // option belongs on files known to need it rather than on well-formed ones.
 func WithIgnoreLength() Option {
 	return func(c *config) { c.ignoreLength = true }
@@ -144,8 +157,10 @@ type Decoder struct {
 	hdr  *riff.Header
 	info wav.StreamInfo
 
-	// remaining counts audio bytes left in the data chunk, or -1 when the
-	// length is unknown and the decoder reads to EOF.
+	// remaining counts whole-frame audio bytes left in the data chunk, or -1
+	// when the length is unknown and the decoder reads to EOF. It is floored
+	// to a multiple of the frame size when the stream is opened or sought, so
+	// the end of the data chunk is always a frame boundary.
 	remaining int64
 
 	// dataStart is the absolute offset of the first audio byte, recorded
@@ -169,6 +184,13 @@ type Decoder struct {
 	// outBuf holds converted bytes not yet handed to the caller, and outOff
 	// is how far into it Read has got. Staging the output is what lets a
 	// converting Read accept a buffer smaller than one converted sample.
+	//
+	// Without a conversion the same pair holds raw bytes of one frame. With
+	// outOff > 0, outBuf is a complete frame staged for a buffer smaller than
+	// a frame, part-served. With outOff == 0 and a non-empty outBuf it is the
+	// head of a frame an earlier read cut short, shorter than a frame, which a
+	// later read puts in front of what it reads. A decoder is in one mode per
+	// Reset, so the two uses never meet.
 	outBuf []byte
 	outOff int
 
@@ -285,6 +307,12 @@ func (d *Decoder) reset(op string, r io.Reader, opts ...Option) error {
 	// unknown-length routes and the option answering to one predicate.
 	if !d.lengthKnown() {
 		d.remaining = -1
+	} else if fb := int64(hdr.BlockAlign); fb > 0 {
+		// The bytes past the chunk's last whole frame are a fragment no path
+		// may return. Flooring here makes the end of the data chunk a frame
+		// boundary for every path, and keeps the one-shot decode's exact-fit
+		// probe from regrowing its buffer for a file with a ragged tail.
+		d.remaining -= d.remaining % fb
 	}
 	// The header layer fills DataSizeKnown from the size field alone, which is
 	// the whole answer only until WithIgnoreLength is in play: the option
@@ -400,12 +428,24 @@ func (d *Decoder) IXML() string {
 // Read reads interleaved samples into p and returns how many bytes it wrote.
 //
 // It is an ordinary io.Reader and returns short reads. Without a conversion a
-// short read is whatever the source gave, since the source is read once per
-// call and need not fill p. Under [WithConvertTo] the decoder bounds itself as
-// well: it converts one staged batch per call, so once p is larger than that
-// batch yields, the returned count stops growing with it. A float64 source
-// read as 8-bit is served 8 KiB per call for any p of 8193 bytes or more, and
-// fills a smaller p as before.
+// short read is what the source gave in one read, rounded down to whole
+// frames: the source is read once per call and need not fill p, and the head
+// of a frame that read cut short is kept and returned at the front of a later
+// Read. When a source read delivers less than one whole frame, the same call
+// reads on until the frame is complete or the audio ends, and a p smaller than
+// one frame is served from a frame staged internally, so such a Read waits for
+// the whole frame. Under [WithConvertTo] the decoder bounds itself as well: it
+// converts one staged batch per call, so once p is larger than that batch
+// yields, the returned count stops growing with it. A mono float64 source read
+// as 8-bit is served 8 KiB per call for any p of 8193 bytes or more, and fills
+// a smaller p as before.
+//
+// The bytes Read yields over a whole stream are whole inter-channel frames,
+// though one Read into a p smaller than a frame returns part of a staged
+// frame. Audio that ends part-way through a frame, because the data chunk size
+// is not a multiple of the frame size or because the source runs out
+// mid-frame, loses that fragment and the stream ends with io.EOF, as a
+// truncated file already did.
 //
 // A short read is not the end of the stream, which is reported as io.EOF.
 // Callers must loop, or hand the decoder to io.Copy, io.ReadAll or
@@ -450,86 +490,197 @@ func (d *Decoder) audio() *bufio.Reader {
 	return d.stream
 }
 
-// readRaw copies stored bytes straight through, bounded by the data chunk.
+// readRaw copies stored bytes straight through, bounded by the data chunk, in
+// whole frames only. A frame a source read cuts short is not returned: its head
+// is held in outBuf and put in front of the next read, and a fragment left at
+// the end of the audio is dropped.
 func (d *Decoder) readRaw(p []byte) (int, error) {
-	if d.remaining == 0 {
+	if d.outOff > 0 {
+		// A frame staged for a smaller buffer is part-served.
+		n := copy(p, d.outBuf[d.outOff:])
+		d.outOff += n
+		if d.outOff == len(d.outBuf) {
+			d.outBuf = d.outBuf[:0]
+			d.outOff = 0
+		}
+		return n, nil
+	}
+	head := len(d.outBuf) // head of a frame an earlier read cut short
+	// The end of the data is checked before the header is touched, so a
+	// zero-value Decoder reports an error rather than panicking.
+	if d.remaining == 0 && head == 0 {
 		return 0, io.EOF
 	}
-	if d.remaining > 0 && int64(len(p)) > d.remaining {
-		p = p[:d.remaining]
+	fb := d.hdr.BlockAlign
+	if fb <= 0 {
+		return 0, fmt.Errorf("go-wav/pcm: %w: block align is not positive", wav.ErrCorruptStream)
 	}
-	n, err := d.audio().Read(p)
+	if len(p) < fb {
+		return d.readRawStaged(p, fb)
+	}
+
+	var r io.Reader = d.audio()
+	if len(p) >= streamBufferSize && d.stream.Buffered() == 0 {
+		// Rounding p down to whole frames can take a read just under the size
+		// the window passes straight to the source (24-bit stereo at 64 KiB
+		// measured 46% slower), which would copy every byte through the
+		// window. With the window empty, br holds exactly the next byte, so
+		// reading from it is what the window would have done. Read(nil)
+		// returns an error the window deferred without reading, so it is
+		// reported in order rather than skipped.
+		if _, err := d.stream.Read(nil); err != nil {
+			return d.endRaw(0, err)
+		}
+		r = d.br
+	}
+
+	want := len(p) - len(p)%fb
+	// head plus remaining is a frame multiple (remaining was floored, and a held
+	// head is the part of a frame already read), so capping a read at head plus
+	// remaining never cuts the last frame.
+	if d.remaining >= 0 && int64(want-head) > d.remaining {
+		want = head + int(d.remaining)
+	}
+	copy(p, d.outBuf)
+	d.outBuf = d.outBuf[:0]
+	n, err := r.Read(p[head:want])
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
-	if err != nil {
+	total := head + n
+	whole := total - total%fb
+	if endOfAudio(err) {
 		// Running out of input early is how a truncated file ends, and is
-		// reported as a clean end of stream rather than as damage.
-		if errors.Is(err, io.ErrUnexpectedEOF) {
-			err = io.EOF
+		// reported as a clean end of stream rather than as damage. Whatever
+		// lies past the last whole frame is the trailing partial frame.
+		return d.endRaw(whole, err)
+	}
+	if total > whole {
+		// A frame this read cut short: keep its head for the next read, which
+		// also holds on a non-EOF error so a retry stays frame-aligned. It is
+		// not completed here, since that is a second source read that can
+		// block with whole frames already in hand.
+		if cap(d.outBuf) < fb {
+			d.outBuf = make([]byte, 0, fb)
 		}
-		if errors.Is(err, io.EOF) {
-			d.remaining = 0
+		d.outBuf = append(d.outBuf, p[whole:total]...)
+		if whole == 0 && err == nil {
+			// Nothing whole is in hand and a (0, nil) return would hide the
+			// bytes that were read, so finish the frame now.
+			return d.readRawStaged(p, fb)
 		}
-		return n, err
+	}
+	return whole, err
+}
+
+// endRaw maps an error from beneath the window to a Read result, with the
+// same end-of-stream mapping readRaw applies to a read.
+func (d *Decoder) endRaw(n int, err error) (int, error) {
+	if endOfAudio(err) {
+		// A frame head held from an earlier read is the dropped fragment, and
+		// must not be completed by a Read after the end was reported.
+		d.outBuf = d.outBuf[:0]
+		d.remaining = 0
+		return n, io.EOF
+	}
+	return n, err
+}
+
+// endOfAudio reports whether err is how the audio ends: a source that runs out,
+// cleanly or part-way through a read.
+func endOfAudio(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// readRawStaged completes one frame in outBuf, from whatever head it holds,
+// and serves it. It is the path for a p smaller than a frame, and for a read
+// that delivered less than one frame. It reads through the window, so a
+// deferred error stays deferred and br is not refilled in small pieces.
+func (d *Decoder) readRawStaged(p []byte, fb int) (int, error) {
+	have := len(d.outBuf)
+	if cap(d.outBuf) < fb {
+		grown := make([]byte, have, fb)
+		copy(grown, d.outBuf)
+		d.outBuf = grown
+	}
+	m, err := io.ReadFull(d.audio(), d.outBuf[have:fb])
+	if d.remaining > 0 {
+		d.remaining -= int64(m)
+	}
+	d.outBuf = d.outBuf[:have+m]
+	if err != nil {
+		if endOfAudio(err) {
+			// The audio ended inside this frame: endRaw drops its head.
+			return d.endRaw(0, err)
+		}
+		// Keep the extended head so a retry completes the same frame.
+		return 0, err
+	}
+	n := copy(p, d.outBuf)
+	if n == fb {
+		d.outBuf = d.outBuf[:0]
+	} else {
+		d.outOff = n
 	}
 	return n, nil
 }
 
 // convertBatchLen returns the number of source bytes a converting read should
 // stage for a caller buffer of bufLen bytes, given the stored and requested
-// sample widths and how many bytes of the data chunk are left. A negative
-// remaining means the length is unknown, so only the buffer and the cap bound
-// the batch.
+// frame widths (one sample of every channel) and how many bytes of the data
+// chunk are left. A negative remaining means the length is unknown, so only
+// the buffer and the cap bound the batch.
 //
 // It takes lengths rather than slices so that the buffer sizes that used to
 // wrap the batch arithmetic can be pinned in a test without allocating them.
-// A zero result means there is no whole sample left to stage, which the caller
+// A zero result means there is no whole frame left to stage, which the caller
 // reports as the end of the stream, or that a width was not positive, which
 // the caller has already rejected before it gets here.
-func convertBatchLen(bufLen, srcWidth, dstWidth int, remaining int64) int {
+func convertBatchLen(bufLen, srcFrame, dstFrame int, remaining int64) int {
 	// The caller checks both widths first and reports a corrupt stream, so
 	// this is unreachable through it. It is kept because the division below
 	// would panic without it, and because this function is entered directly
 	// from its test; it deliberately does not try to report the difference,
 	// since the caller owns that error and states it better.
-	if srcWidth <= 0 || dstWidth <= 0 {
+	if srcFrame <= 0 || dstFrame <= 0 {
 		return 0
 	}
 
-	// Enough samples to fill the caller's buffer, never fewer than one so a
-	// buffer smaller than a single converted sample still makes progress, and
+	// Enough frames to fill the caller's buffer, never fewer than one so a
+	// buffer smaller than a single converted frame still makes progress, and
 	// never more than the batch cap. Bounding the count by division before
 	// the multiplication is what keeps the product from wrapping; see
 	// maxConvertBatch.
 	//
-	// The floor on the cap itself cannot bind for any width this package
-	// supports, since the widest sample is 8 bytes and the cap is 64 KiB. It
-	// guards the case where the quotient is 0, which is what a sample wider
-	// than the whole batch would give, so that the batch is never empty for a
-	// reason the caller would read as end of stream.
-	samples := max(bufLen/dstWidth, 1)
-	samples = min(samples, max(maxConvertBatch/srcWidth, 1))
-	want := samples * srcWidth
+	// The floor on the cap itself binds for a frame wider than the whole
+	// batch, which a file with enough channels has: a frame is up to 524280
+	// bytes (65535 channels of 8-byte samples) and the cap is 64 KiB. The
+	// quotient is then 0, and the floor makes the batch one frame, larger than
+	// the cap, so that it is never empty for a reason the caller would read as
+	// end of stream. The 16-bit channel field still bounds it.
+	frames := max(bufLen/dstFrame, 1)
+	frames = min(frames, max(maxConvertBatch/srcFrame, 1))
+	want := frames * srcFrame
 
 	// Past the end of the data chunk the chunk's own length is the smaller
-	// bound, and a trailing fragment shorter than one stored sample is
-	// dropped because nothing can be converted from it. Narrowing remaining
-	// to an int is safe here because this branch is only reached when it is
-	// below want, which the cap has already put well inside an int on every
-	// platform.
+	// bound. The chunk's length is a whole number of frames already, so the
+	// trim below only matters to a caller that passes an arbitrary remaining;
+	// it keeps a trailing fragment shorter than one frame from being staged.
+	// Narrowing remaining to an int is safe here because this branch is only
+	// reached when it is below want, which the cap has already put well inside
+	// an int on every platform.
 	if remaining >= 0 && remaining < int64(want) {
 		want = int(remaining)
-		want -= want % srcWidth
+		want -= want % srcFrame
 	}
 	return want
 }
 
-// readConverted reads whole source samples and converts them into p.
+// readConverted reads whole source frames and converts them into p.
 func (d *Decoder) readConverted(p []byte) (int, error) {
 	// Serve whatever the previous conversion left over. Staging the output
 	// rather than converting straight into p is what lets Read honour any
-	// buffer size, including one smaller than a single converted sample.
+	// buffer size, including one smaller than a single converted frame.
 	// Converting in place would have to refuse that, which would make the
 	// converting path violate the io.Reader contract the pass-through path
 	// keeps.
@@ -551,7 +702,9 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 		return 0, fmt.Errorf("go-wav/pcm: %w: sample width is not positive", wav.ErrCorruptStream)
 	}
 
-	want := convertBatchLen(len(p), srcWidth, dstWidth, d.remaining)
+	srcFrame := srcWidth * d.info.Channels
+	dstFrame := dstWidth * d.info.Channels
+	want := convertBatchLen(len(p), srcFrame, dstFrame, d.remaining)
 	if want == 0 {
 		d.remaining = 0
 		return 0, io.EOF
@@ -566,11 +719,16 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err != nil && !endOfAudio(err) {
 		return 0, err
 	}
-	// Drop a trailing partial sample; it cannot be converted.
-	n -= n % srcWidth
+	if endOfAudio(err) {
+		// The audio ended in this batch, so the next Read reports io.EOF
+		// rather than reading on from the source after the dropped fragment.
+		d.remaining = 0
+	}
+	// Drop a trailing partial frame; only whole frames are handed out.
+	n -= n % srcFrame
 	if n == 0 {
 		d.remaining = 0
 		return 0, io.EOF
@@ -581,8 +739,8 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	// Fast path: when the converted batch fits in the caller's buffer, convert
 	// straight into it and skip the staging copy. convertBatchLen sizes the
 	// batch to fill p, so this is the common case; the only time need exceeds
-	// len(p) is when p is smaller than a single converted sample, which forces
-	// the batch up to one whole sample and is what the staging buffer below
+	// len(p) is when p is smaller than a single converted frame, which forces
+	// the batch up to one whole frame and is what the staging buffer below
 	// exists to dribble out.
 	if need <= len(p) {
 		// No leftover is produced, so leave the staging buffer drained: the next
@@ -661,7 +819,7 @@ func (d *Decoder) WriteTo(w io.Writer) (int64, error) {
 // length the decoder may trust, which [wav.StreamInfo.DataSizeKnown] reports,
 // so a caller can tell which of the two rules below applies before calling.
 // When it did, a request beyond the audio is clamped to the end of the data
-// chunk and the returned frame is the one actually reached, so a returned
+// chunk (its last whole frame) and the returned frame is the one actually reached, so a returned
 // frame lower than the requested one means the stream ran out. When the length
 // is unknown, or [WithIgnoreLength] is discarding it, there is no boundary to
 // clamp against: the seek is performed as asked and the requested frame is
@@ -715,9 +873,12 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 
 	lengthKnown := d.lengthKnown()
 
+	// The end of the audio is the last whole frame of the chunk; the
+	// fragment past it is never read.
+	audioEnd := d.hdr.DataSize - d.hdr.DataSize%perFrame
 	offset := frame * perFrame
 	if lengthKnown && offset > d.hdr.DataSize {
-		offset = d.hdr.DataSize - d.hdr.DataSize%perFrame
+		offset = audioEnd
 	}
 	if _, err := seeker.Seek(dataStart+offset, io.SeekStart); err != nil {
 		return 0, err
@@ -731,7 +892,7 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		d.stream.Reset(d.br)
 	}
 	if lengthKnown {
-		d.remaining = d.hdr.DataSize - offset
+		d.remaining = audioEnd - offset
 	} else {
 		// The length is unknown, or is being ignored, so there is no bound to
 		// clamp remaining to. A Read after this seek runs to the real end of
@@ -739,8 +900,9 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		d.remaining = -1
 	}
 	d.srcBuf = d.srcBuf[:0]
-	// Converted bytes staged from before the seek describe the old position,
-	// so they must not be handed out afterwards.
+	// Converted bytes, a staged raw frame or a held frame head from before
+	// the seek describe the old position, so they must not be handed out
+	// afterwards.
 	d.outBuf = d.outBuf[:0]
 	d.outOff = 0
 	return offset / perFrame, nil

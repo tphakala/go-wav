@@ -201,8 +201,8 @@ before relying on the aliasing. The `io.Reader` form always allocates, so its
 result never aliases anything.
 
 By default the decoder is a pass-through for everything but the two companding
-laws: `Read` yields the bytes as stored, so 24-bit audio stays packed in three
-bytes and nothing is widened behind your back. That also means the encoding
+laws: `Read` yields whole frames as stored, so 24-bit audio stays packed in
+three bytes and nothing is widened behind your back. That also means the encoding
 varies with the file, and in particular that **8-bit data is unsigned while
 every wider integer depth is signed**, because that is how WAV stores them. To
 normalise:
@@ -278,9 +278,10 @@ one and it is broken.
 
 The reader tolerates what real files get wrong: a missing pad byte after an odd
 chunk, a data size of zero or `0xFFFFFFFF`, a declared size running past the end
-of the file, trailing bytes after the audio, and chunks in any order. It does
-not tolerate ambiguity about the sample format: a stream it cannot decode is
-reported rather than guessed at.
+of the file, trailing bytes after the audio, a data chunk or file that ends
+part-way through a frame (the partial frame is dropped), and chunks in any
+order. It does not tolerate ambiguity about the sample format: a stream it
+cannot decode is reported rather than guessed at.
 
 Because it tolerates those, `StreamInfo.TotalFrames` is a claim the header makes
 and never a count of bytes present: a truncated or interrupted file reports the

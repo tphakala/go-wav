@@ -122,10 +122,11 @@ func benchDecodeFixture(b *testing.B, cfg pcm.Config, frames int) []byte {
 	return buf.Bytes()
 }
 
-// BenchmarkDecodePassThrough is the default decode path, which should copy
-// stored bytes without converting.
-func BenchmarkDecodePassThrough(b *testing.B) {
-	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
+// benchPassThrough decodes a clip of cfg through 64 KiB reads without a
+// conversion, and fails if a path stops early and would otherwise report an
+// absurd throughput while still exiting zero.
+func benchPassThrough(b *testing.B, cfg pcm.Config) {
+	b.Helper()
 	file := benchDecodeFixture(b, cfg, benchClipFrames)
 	sink := make([]byte, 64<<10)
 	wantBytes := int64(benchClipFrames * cfg.Channels * (cfg.BitDepth / 8))
@@ -147,11 +148,32 @@ func BenchmarkDecodePassThrough(b *testing.B) {
 				b.Fatalf("read: %v", rerr)
 			}
 		}
-		// Guard against a regression that fails on the first Read and would
-		// otherwise report an absurd throughput while still exiting zero.
 		if got != wantBytes {
 			b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
 		}
+	}
+}
+
+// BenchmarkDecodePassThrough is the default decode path, which should copy
+// stored bytes without converting.
+func BenchmarkDecodePassThrough(b *testing.B) {
+	benchPassThrough(b, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1})
+}
+
+// BenchmarkDecodePassThroughWideFrames is the pass-through path for frames
+// that do not divide the 64 KiB read size (24-bit stereo) or whose header
+// leaves a window remainder that cuts a frame (float32 stereo). The mono
+// 16-bit benchmark above divides both, so it cannot show a read that has to
+// round to whole frames or carry a frame head between reads.
+func BenchmarkDecodePassThroughWideFrames(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		cfg  pcm.Config
+	}{
+		{"24bit stereo", pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}},
+		{"float32 stereo", pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 2, Format: wav.SampleFormatFloat}},
+	} {
+		b.Run(tc.name, func(b *testing.B) { benchPassThrough(b, tc.cfg) })
 	}
 }
 
