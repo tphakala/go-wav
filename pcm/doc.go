@@ -55,8 +55,11 @@
 //
 // The decoder is an [io.Reader] and an [io.WriterTo] over the data chunk. By
 // default it is a pass-through for everything but the two companding laws:
-// Read yields the stored bytes verbatim, so 24-bit audio stays packed in three
-// bytes and nothing is widened behind the caller's back.
+// Read yields the stored bytes, in whole frames, so 24-bit audio stays packed
+// in three bytes and nothing is widened behind the caller's back. Every decode
+// path drops a trailing partial frame (a data chunk size that is not a
+// multiple of the frame size, or a source that ends mid-frame), so a decode
+// never ends part-way through an inter-channel frame.
 //
 //	d, err := wavpcm.NewDecoder(r)
 //	info := d.Info()       // valid immediately

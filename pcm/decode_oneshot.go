@@ -266,13 +266,15 @@ var decoderPool = sync.Pool{New: func() any { return new(oneshotDecoder) }}
 // a fixed batch and therefore cannot reach this limit at any file size.
 //
 // b must hold the whole stream, because there is no source left to read on
-// from. A partial file therefore decodes as a truncated one: the audio that is
-// present comes back and the shortfall is not reported, which is how
-// [Decoder.Read] treats a stream that ends early. Anything stored after the
-// audio, such as a trailing LIST or id3 chunk, is left out rather than
-// rejected, since a trailer is legal and common; only a stream that declares no
-// length, or one decoded under [WithIgnoreLength], hands back everything that
-// follows the header, as that option documents.
+// from. A partial file therefore decodes as a truncated one: the whole frames
+// that are present come back and the shortfall is not reported, which is how
+// [Decoder.Read] treats a stream that ends early. A trailing partial frame,
+// whether the data chunk size or the end of b cut it, is left out like the pad
+// byte. Anything stored after the audio, such as a trailing LIST or id3 chunk,
+// is left out rather than rejected, since a trailer is legal and common; only a
+// stream that declares no length, or one decoded under [WithIgnoreLength],
+// hands back everything that follows the header, in whole frames, as that
+// option documents.
 //
 // This path exposes no bext or iXML chunk; a caller that wants the metadata a
 // stream carries opens it with [NewDecoder] and calls [Decoder.Bext] or
@@ -322,6 +324,17 @@ func DecodeInterleavedBytes(b []byte, opts ...Option) ([]byte, wav.StreamInfo, e
 	if d.remaining >= 0 && start+d.remaining < end {
 		end = start + d.remaining
 	}
+	// Only whole frames are returned: the fragment past the last one, whether
+	// the chunk size or the end of b left it, is trimmed here, above the
+	// pass-through and converting split so both see whole frames. d.remaining
+	// is already a frame multiple, so this only bites when b ends mid-frame or
+	// the length is unknown.
+	fb := int64(d.hdr.BlockAlign)
+	if fb <= 0 {
+		return nil, wav.StreamInfo{}, fmt.Errorf(
+			"go-wav/pcm: DecodeInterleavedBytes: %w: block align is not positive", wav.ErrCorruptStream)
+	}
+	end -= (end - start) % fb
 	// A three-index slice keeps the result from being appended into whatever
 	// follows the audio in the caller's own buffer.
 	audio := b[start:end:end]
@@ -334,10 +347,9 @@ func DecodeInterleavedBytes(b []byte, opts ...Option) ([]byte, wav.StreamInfo, e
 	// width from the stored ones and cannot be written back over the caller's
 	// buffer. This is also the path a companded source takes with no option at
 	// all, since the decoder expands one whether or not it was asked to, which
-	// is why the pass-through above is not simply the no-option case. A
-	// trailing fragment shorter than one stored sample cannot be converted;
-	// sample.Convert ignores it, which is the same thing [Decoder.Read] does
-	// when a source runs out mid-sample.
+	// is why the pass-through above is not simply the no-option case. The
+	// fragment past the last whole frame is already gone, so Convert sees
+	// whole frames.
 	srcWidth := sample.BytesPerSample(d.info.SourceBitDepth)
 	dstWidth := sample.BytesPerSample(d.convert)
 	if srcWidth <= 0 || dstWidth <= 0 {
@@ -346,8 +358,8 @@ func DecodeInterleavedBytes(b []byte, opts ...Option) ([]byte, wav.StreamInfo, e
 	}
 	// Widening a whole file in one call is the only place this package asks
 	// for a buffer whose length may not be expressible. The streaming
-	// converter cannot reach the limit because maxConvertBatch bounds every
-	// batch it stages; here the whole file is the batch, and the file's size
+	// converter cannot reach the limit because the larger of maxConvertBatch
+	// and one frame bounds every batch it stages; here the whole file is the batch, and the file's size
 	// is not this package's to choose.
 	if !convertedBytesFit(len(audio)/srcWidth, dstWidth, math.MaxInt) {
 		return nil, wav.StreamInfo{},

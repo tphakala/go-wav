@@ -512,4 +512,20 @@ func TestDecoderReadDoesNotWaitOrSkipErrors(t *testing.T) {
 			t.Errorf("second Read = %d, %v; want 0 and the deferred error", got, err)
 		}
 	})
+
+	t.Run("a deferred end of stream ends an unknown-length stream", func(t *testing.T) {
+		t.Parallel()
+		unknown := s16.build(t, -1, 8192)
+		src := &scriptedReader{data: unknown, header: header, steps: []scriptStep{{4096, io.EOF}}}
+		d, err := pcm.NewDecoder(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := d.Read(make([]byte, 4096)); err != nil || got != 4096 {
+			t.Fatalf("first Read = %d, %v; want 4096, nil", got, err)
+		}
+		if got, err := d.Read(make([]byte, 65536)); !errors.Is(err, io.EOF) || got != 0 {
+			t.Errorf("second Read = %d, %v; want 0, io.EOF", got, err)
+		}
+	})
 }
