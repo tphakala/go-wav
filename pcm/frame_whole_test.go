@@ -454,14 +454,26 @@ func TestDecoderReadDoesNotAllocate(t *testing.T) { //nolint:paralleltest // All
 						t.Fatal(err)
 					}
 					buf := make([]byte, size)
+					wantLen := n * d.Info().BytesPerFrame()
 					allocs := testing.AllocsPerRun(10, func() {
 						if _, err := d.SeekToFrame(0); err != nil {
 							t.Fatal(err)
 						}
+						// Every measured run must drain the whole stream: a Read
+						// that failed or ended early would allocate nothing.
+						total := 0
 						for {
-							if _, err := d.Read(buf); err != nil {
-								return
+							m, err := d.Read(buf)
+							total += m
+							if errors.Is(err, io.EOF) {
+								break
 							}
+							if err != nil {
+								t.Fatalf("Read: %v", err)
+							}
+						}
+						if total != wantLen {
+							t.Fatalf("drained %d bytes, want %d", total, wantLen)
 						}
 					})
 					if allocs != 0 {
