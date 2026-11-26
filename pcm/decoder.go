@@ -431,17 +431,21 @@ func (d *Decoder) IXML() string {
 // short read is what the source gave in one read, rounded down to whole
 // frames: the source is read once per call and need not fill p, and the head
 // of a frame that read cut short is kept and returned at the front of a later
-// Read. A p smaller than one frame is served from a frame staged internally,
-// so such a Read waits for the whole frame. Under [WithConvertTo] the decoder
-// bounds itself as well: it converts one staged batch per call, so once p is
-// larger than that batch yields, the returned count stops growing with it. A
-// mono float64 source read as 8-bit is served 8 KiB per call for any p of 8193
-// bytes or more, and fills a smaller p as before.
+// Read. When a source read delivers less than one whole frame, the same call
+// reads on until the frame is complete or the audio ends, and a p smaller than
+// one frame is served from a frame staged internally, so such a Read waits for
+// the whole frame. Under [WithConvertTo] the decoder bounds itself as well: it
+// converts one staged batch per call, so once p is larger than that batch
+// yields, the returned count stops growing with it. A mono float64 source read
+// as 8-bit is served 8 KiB per call for any p of 8193 bytes or more, and fills
+// a smaller p as before.
 //
-// Read only ever yields whole inter-channel frames. Audio that ends part-way
-// through a frame, because the data chunk size is not a multiple of the frame
-// size or because the source runs out mid-frame, loses that fragment and the
-// stream ends with io.EOF, as a truncated file already did.
+// The bytes Read yields over a whole stream are whole inter-channel frames,
+// though one Read into a p smaller than a frame returns part of a staged
+// frame. Audio that ends part-way through a frame, because the data chunk size
+// is not a multiple of the frame size or because the source runs out
+// mid-frame, loses that fragment and the stream ends with io.EOF, as a
+// truncated file already did.
 //
 // A short read is not the end of the stream, which is reported as io.EOF.
 // Callers must loop, or hand the decoder to io.Copy, io.ReadAll or
@@ -531,9 +535,9 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 	}
 
 	want := len(p) - len(p)%fb
-	// remaining and head are both frame multiples (remaining was floored and
-	// a held head is the part of a frame already read), so capping a read at
-	// them never cuts the last frame.
+	// head plus remaining is a frame multiple (remaining was floored, and a held
+	// head is the part of a frame already read), so capping a read at head plus
+	// remaining never cuts the last frame.
 	if d.remaining >= 0 && int64(want-head) > d.remaining {
 		want = head + int(d.remaining)
 	}
