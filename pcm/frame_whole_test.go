@@ -53,12 +53,11 @@ func (s frameShape) build(tb testing.TB, declared, present int) []byte {
 	if declared == present && present%2 != 0 {
 		out = append(out, 0)
 	}
-	span := requireChunk(tb, out, "data")
 	size := uint32(0xFFFFFFFF)
 	if declared >= 0 {
 		size = uint32(declared) //nolint:gosec // G115: test sizes are small.
 	}
-	binary.LittleEndian.PutUint32(out[span.payload-4:], size)
+	out = patchDataSize(tb, out, size)
 	binary.LittleEndian.PutUint32(out[4:], uint32(len(out)-8)) //nolint:gosec // G115: test sizes are small.
 	if s.channels != 0 {
 		binary.LittleEndian.PutUint16(out[requireChunk(tb, out, "fmt ").payload+2:], uint16(s.channels)) //nolint:gosec // G115: test channel counts are small.
@@ -433,36 +432,43 @@ func TestDecoderReadRetryAfterErrorStaysAligned(t *testing.T) {
 // by its run count as integers, so each run drains the whole stream: an
 // allocation per 64 KiB window then still shows as at least one per run.
 func TestDecoderReadDoesNotAllocate(t *testing.T) { //nolint:paralleltest // AllocsPerRun panics in a parallel test.
-	s24 := frameShape{cfg: pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}}
 	const n = 30000
-	file := s24.build(t, n*6, n*6)
-
-	for _, depth := range []int{0, 16} {
-		for _, size := range []int{3, 4000} {
-			t.Run(fmt.Sprintf("convert%d/buf%d", depth, size), func(t *testing.T) {
-				var opts []pcm.Option
-				if depth != 0 {
-					opts = append(opts, pcm.WithConvertTo(depth))
-				}
-				d, err := pcm.NewDecoder(bytes.NewReader(file), opts...)
-				if err != nil {
-					t.Fatal(err)
-				}
-				buf := make([]byte, size)
-				allocs := testing.AllocsPerRun(10, func() {
-					if _, err := d.SeekToFrame(0); err != nil {
+	// 24-bit stereo at 4000 bytes recurs through held heads at every window
+	// boundary and staged frames at 3 bytes; float32 stereo adds an 8 byte
+	// frame read in 64 KiB calls straight from the source.
+	for _, shape := range []struct {
+		name  string
+		shape frameShape
+		sizes []int
+	}{
+		{"s24", frameShape{cfg: pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}}, []int{3, 4000}},
+		{"f32", frameShape{cfg: pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 2, Format: wav.SampleFormatFloat}}, []int{3, 64 << 10}},
+	} {
+		fb := shape.shape.frameBytes()
+		file := shape.shape.build(t, n*fb, n*fb)
+		for _, depth := range []int{0, 16} {
+			for _, size := range shape.sizes {
+				t.Run(fmt.Sprintf("%s/convert%d/buf%d", shape.name, depth, size), func(t *testing.T) {
+					d, err := pcm.NewDecoder(bytes.NewReader(file), convertOpts(depth)...)
+					if err != nil {
 						t.Fatal(err)
 					}
-					for {
-						if _, err := d.Read(buf); err != nil {
-							return
+					buf := make([]byte, size)
+					allocs := testing.AllocsPerRun(10, func() {
+						if _, err := d.SeekToFrame(0); err != nil {
+							t.Fatal(err)
 						}
+						for {
+							if _, err := d.Read(buf); err != nil {
+								return
+							}
+						}
+					})
+					if allocs != 0 {
+						t.Errorf("a full read allocated %v times per run, want 0", allocs)
 					}
 				})
-				if allocs != 0 {
-					t.Errorf("a full read allocated %v times per run, want 0", allocs)
-				}
-			})
+			}
 		}
 	}
 }

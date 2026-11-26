@@ -545,12 +545,11 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 	}
 	total := head + n
 	whole := total - total%fb
-	if err != nil && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) {
+	if endOfAudio(err) {
 		// Running out of input early is how a truncated file ends, and is
 		// reported as a clean end of stream rather than as damage. Whatever
 		// lies past the last whole frame is the trailing partial frame.
-		d.remaining = 0
-		return whole, io.EOF
+		return d.endRaw(whole, err)
 	}
 	if total > whole {
 		// A frame this read cut short: keep its head for the next read, which
@@ -573,11 +572,17 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 // endRaw maps an error from beneath the window to a Read result, with the
 // same end-of-stream mapping readRaw applies to a read.
 func (d *Decoder) endRaw(n int, err error) (int, error) {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+	if endOfAudio(err) {
 		d.remaining = 0
 		return n, io.EOF
 	}
 	return n, err
+}
+
+// endOfAudio reports whether err is how the audio ends: a source that runs out,
+// cleanly or part-way through a read.
+func endOfAudio(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // readRawStaged completes one frame in outBuf, from whatever head it holds,
@@ -597,11 +602,10 @@ func (d *Decoder) readRawStaged(p []byte, fb int) (int, error) {
 	}
 	d.outBuf = d.outBuf[:have+m]
 	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		if endOfAudio(err) {
 			// The audio ended inside this frame: drop its head.
 			d.outBuf = d.outBuf[:0]
-			d.remaining = 0
-			return 0, io.EOF
+			return d.endRaw(0, err)
 		}
 		// Keep the extended head so a retry completes the same frame.
 		return 0, err
@@ -709,7 +713,7 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	if d.remaining > 0 {
 		d.remaining -= int64(n)
 	}
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+	if err != nil && !endOfAudio(err) {
 		return 0, err
 	}
 	// Drop a trailing partial frame; only whole frames are handed out.
@@ -858,9 +862,12 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 
 	lengthKnown := d.lengthKnown()
 
+	// The end of the audio is the last whole frame of the chunk; the
+	// fragment past it is never read.
+	audioEnd := d.hdr.DataSize - d.hdr.DataSize%perFrame
 	offset := frame * perFrame
 	if lengthKnown && offset > d.hdr.DataSize {
-		offset = d.hdr.DataSize - d.hdr.DataSize%perFrame
+		offset = audioEnd
 	}
 	if _, err := seeker.Seek(dataStart+offset, io.SeekStart); err != nil {
 		return 0, err
@@ -874,7 +881,7 @@ func (d *Decoder) SeekToFrame(frame int64) (int64, error) {
 		d.stream.Reset(d.br)
 	}
 	if lengthKnown {
-		d.remaining = d.hdr.DataSize - d.hdr.DataSize%perFrame - offset
+		d.remaining = audioEnd - offset
 	} else {
 		// The length is unknown, or is being ignored, so there is no bound to
 		// clamp remaining to. A Read after this seek runs to the real end of

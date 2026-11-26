@@ -122,10 +122,11 @@ func benchDecodeFixture(b *testing.B, cfg pcm.Config, frames int) []byte {
 	return buf.Bytes()
 }
 
-// BenchmarkDecodePassThrough is the default decode path, which should copy
-// stored bytes without converting.
-func BenchmarkDecodePassThrough(b *testing.B) {
-	cfg := pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1}
+// benchPassThrough decodes a clip of cfg through 64 KiB reads without a
+// conversion, and fails if a path stops early and would otherwise report an
+// absurd throughput while still exiting zero.
+func benchPassThrough(b *testing.B, cfg pcm.Config) {
+	b.Helper()
 	file := benchDecodeFixture(b, cfg, benchClipFrames)
 	sink := make([]byte, 64<<10)
 	wantBytes := int64(benchClipFrames * cfg.Channels * (cfg.BitDepth / 8))
@@ -147,12 +148,16 @@ func BenchmarkDecodePassThrough(b *testing.B) {
 				b.Fatalf("read: %v", rerr)
 			}
 		}
-		// Guard against a regression that fails on the first Read and would
-		// otherwise report an absurd throughput while still exiting zero.
 		if got != wantBytes {
 			b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
 		}
 	}
+}
+
+// BenchmarkDecodePassThrough is the default decode path, which should copy
+// stored bytes without converting.
+func BenchmarkDecodePassThrough(b *testing.B) {
+	benchPassThrough(b, pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 1})
 }
 
 // BenchmarkDecodePassThroughWideFrames is the pass-through path for frames
@@ -168,33 +173,7 @@ func BenchmarkDecodePassThroughWideFrames(b *testing.B) {
 		{"24bit stereo", pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}},
 		{"float32 stereo", pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 2, Format: wav.SampleFormatFloat}},
 	} {
-		b.Run(tc.name, func(b *testing.B) {
-			file := benchDecodeFixture(b, tc.cfg, benchClipFrames)
-			sink := make([]byte, 64<<10)
-			wantBytes := int64(benchClipFrames * tc.cfg.Channels * (tc.cfg.BitDepth / 8))
-			b.SetBytes(wantBytes)
-			b.ReportAllocs()
-			for b.Loop() {
-				d, err := pcm.NewDecoder(bytes.NewReader(file))
-				if err != nil {
-					b.Fatal(err)
-				}
-				var got int64
-				for {
-					n, rerr := d.Read(sink)
-					got += int64(n)
-					if errors.Is(rerr, io.EOF) {
-						break
-					}
-					if rerr != nil {
-						b.Fatalf("read: %v", rerr)
-					}
-				}
-				if got != wantBytes {
-					b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
-				}
-			}
-		})
+		b.Run(tc.name, func(b *testing.B) { benchPassThrough(b, tc.cfg) })
 	}
 }
 
