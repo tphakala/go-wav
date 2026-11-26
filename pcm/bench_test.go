@@ -155,6 +155,49 @@ func BenchmarkDecodePassThrough(b *testing.B) {
 	}
 }
 
+// BenchmarkDecodePassThroughWideFrames is the pass-through path for frames
+// that do not divide the 64 KiB read size (24-bit stereo) or whose header
+// leaves a window remainder that cuts a frame (float32 stereo). The mono
+// 16-bit benchmark above divides both, so it cannot show a read that has to
+// round to whole frames or carry a frame head between reads.
+func BenchmarkDecodePassThroughWideFrames(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		cfg  pcm.Config
+	}{
+		{"24bit stereo", pcm.Config{SampleRate: 48000, BitDepth: 24, Channels: 2}},
+		{"float32 stereo", pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 2, Format: wav.SampleFormatFloat}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			file := benchDecodeFixture(b, tc.cfg, benchClipFrames)
+			sink := make([]byte, 64<<10)
+			wantBytes := int64(benchClipFrames * tc.cfg.Channels * (tc.cfg.BitDepth / 8))
+			b.SetBytes(wantBytes)
+			b.ReportAllocs()
+			for b.Loop() {
+				d, err := pcm.NewDecoder(bytes.NewReader(file))
+				if err != nil {
+					b.Fatal(err)
+				}
+				var got int64
+				for {
+					n, rerr := d.Read(sink)
+					got += int64(n)
+					if errors.Is(rerr, io.EOF) {
+						break
+					}
+					if rerr != nil {
+						b.Fatalf("read: %v", rerr)
+					}
+				}
+				if got != wantBytes {
+					b.Fatalf("decoded %d bytes, want %d", got, wantBytes)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkDecodeConvert is the converting decode path.
 func BenchmarkDecodeConvert(b *testing.B) {
 	cfg := pcm.Config{SampleRate: 48000, BitDepth: 32, Channels: 1, Format: wav.SampleFormatFloat}

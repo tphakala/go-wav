@@ -80,6 +80,15 @@ func FuzzDecode(f *testing.F) {
 				continue
 			}
 
+			// Whatever the header claims and wherever the audio stops, every
+			// byte returned before a clean end is part of a whole frame.
+			if fb := info.BytesPerFrame(); streamed.Len()%fb != 0 {
+				t.Fatalf("drained %d bytes, not a whole number of %d byte frames", streamed.Len(), fb)
+			}
+			if info.DataSizeKnown && uint64(streamed.Len()/info.BytesPerFrame()) > info.TotalFrames {
+				t.Fatalf("drained %d frames, more than the %d declared", streamed.Len()/info.BytesPerFrame(), info.TotalFrames)
+			}
+
 			// Every bound the one-shot path computes comes from the same
 			// attacker-controlled header, and it slices rather than reads, so
 			// a bound the streaming path merely stops early on is one this
@@ -175,7 +184,10 @@ func FuzzDecodeSeek(f *testing.F) {
 		if got < 0 {
 			t.Fatalf("SeekToFrame(%d) reported a negative frame %d", frame, got)
 		}
-		_, _ = io.Copy(io.Discard, d)
+		n, cerr := io.Copy(io.Discard, d)
+		if fb := int64(d.Info().BytesPerFrame()); cerr == nil && n%fb != 0 {
+			t.Fatalf("drained %d bytes after a seek, not a whole number of %d byte frames", n, fb)
+		}
 	})
 }
 
