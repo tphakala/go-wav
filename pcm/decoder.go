@@ -573,6 +573,9 @@ func (d *Decoder) readRaw(p []byte) (int, error) {
 // same end-of-stream mapping readRaw applies to a read.
 func (d *Decoder) endRaw(n int, err error) (int, error) {
 	if endOfAudio(err) {
+		// A frame head held from an earlier read is the dropped fragment, and
+		// must not be completed by a Read after the end was reported.
+		d.outBuf = d.outBuf[:0]
 		d.remaining = 0
 		return n, io.EOF
 	}
@@ -603,8 +606,7 @@ func (d *Decoder) readRawStaged(p []byte, fb int) (int, error) {
 	d.outBuf = d.outBuf[:have+m]
 	if err != nil {
 		if endOfAudio(err) {
-			// The audio ended inside this frame: drop its head.
-			d.outBuf = d.outBuf[:0]
+			// The audio ended inside this frame: endRaw drops its head.
 			return d.endRaw(0, err)
 		}
 		// Keep the extended head so a retry completes the same frame.
@@ -715,6 +717,11 @@ func (d *Decoder) readConverted(p []byte) (int, error) {
 	}
 	if err != nil && !endOfAudio(err) {
 		return 0, err
+	}
+	if endOfAudio(err) {
+		// The audio ended in this batch, so the next Read reports io.EOF
+		// rather than reading on from the source after the dropped fragment.
+		d.remaining = 0
 	}
 	// Drop a trailing partial frame; only whole frames are handed out.
 	n -= n % srcFrame

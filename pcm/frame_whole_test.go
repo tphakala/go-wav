@@ -535,3 +535,56 @@ func TestDecoderReadDoesNotWaitOrSkipErrors(t *testing.T) {
 		}
 	})
 }
+
+// TestDecoderReadReportsEndOnceAudioEnded pins that after a Read has reported
+// io.EOF, or has dropped a trailing partial frame at the end of the audio, the
+// next Read reports io.EOF without touching the source again. The source here
+// resumes serving data after its end, as a file still being appended to does,
+// which is the only source that can tell a latched end from a re-read one.
+func TestDecoderReadReportsEndOnceAudioEnded(t *testing.T) {
+	t.Parallel()
+
+	s16 := frameShape{cfg: pcm.Config{SampleRate: 48000, BitDepth: 16, Channels: 2}}
+	// The data size is unknown, so the decoder reads to the end of the source.
+	file := s16.build(t, -1, 8192)
+	header := dataOffset(t, file)
+	// The source ends with 4098 bytes, 2 past a whole number of 4 byte frames.
+	steps := func() []scriptStep { return []scriptStep{{4098, io.EOF}} }
+
+	t.Run("raw: deferred end while a frame head is held", func(t *testing.T) {
+		t.Parallel()
+		src := &scriptedReader{data: file, header: header, steps: steps()}
+		d, err := pcm.NewDecoder(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The first read takes the 4096 whole bytes and holds the 2 byte head.
+		if got, err := d.Read(make([]byte, 8192)); err != nil || got != 4096 {
+			t.Fatalf("first Read = %d, %v; want 4096, nil", got, err)
+		}
+		// The window is empty and holds the deferred end.
+		if got, err := d.Read(make([]byte, 65536)); !errors.Is(err, io.EOF) || got != 0 {
+			t.Fatalf("second Read = %d, %v; want 0, io.EOF", got, err)
+		}
+		reads := src.calls
+		if got, err := d.Read(make([]byte, 65536)); !errors.Is(err, io.EOF) || got != 0 || src.calls != reads {
+			t.Errorf("Read after the end = %d, %v after %d more source reads; want 0, io.EOF, none", got, err, src.calls-reads)
+		}
+	})
+
+	t.Run("converted: trailing partial frame at the end", func(t *testing.T) {
+		t.Parallel()
+		src := &scriptedReader{data: file, header: header, steps: steps()}
+		d, err := pcm.NewDecoder(src, pcm.WithConvertTo(16))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := d.Read(make([]byte, 8192)); err != nil || got != 4096 {
+			t.Fatalf("first Read = %d, %v; want 4096, nil", got, err)
+		}
+		reads := src.calls
+		if got, err := d.Read(make([]byte, 8192)); !errors.Is(err, io.EOF) || got != 0 || src.calls != reads {
+			t.Errorf("Read after the end = %d, %v after %d more source reads; want 0, io.EOF, none", got, err, src.calls-reads)
+		}
+	})
+}
